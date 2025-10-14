@@ -19,7 +19,8 @@ use crate::{
 };
 
 use protocol_host::{
-    HANDSHAKE_COMMAND, HANDSHAKE_DELIMITER, HANDSHAKE_RESPONSE, HANDSHAKE_TIMEOUT,
+    encode_command, EncodeError, HANDSHAKE_COMMAND, HANDSHAKE_DELIMITER, HANDSHAKE_RESPONSE,
+    HANDSHAKE_TIMEOUT,
 };
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -347,15 +348,29 @@ impl App {
         let writer_task = tokio::spawn(async move {
             let mut writer_half = writer_half;
             let mut command_rx = serial_rx;
-            while let Some(mut command) = command_rx.recv().await {
-                if !command.ends_with(HANDSHAKE_DELIMITER) {
-                    command.push_str(HANDSHAKE_DELIMITER);
+            while let Some(command) = command_rx.recv().await {
+                let trimmed = command.trim();
+                if trimmed.is_empty() {
+                    continue;
                 }
-                if let Err(e) = writer_half.write_all(command.as_bytes()).await {
-                    let _ = writer_action_tx.send(Action::ConnectionFailed(format!(
-                        "Serial write failed: {e}"
-                    )));
-                    break;
+
+                match encode_command(trimmed) {
+                    Ok(mut payload) => {
+                        payload.extend_from_slice(HANDSHAKE_DELIMITER.as_bytes());
+                        if let Err(e) = writer_half.write_all(&payload).await {
+                            let _ = writer_action_tx.send(Action::ConnectionFailed(format!(
+                                "Serial write failed: {e}"
+                            )));
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        let message = format!(
+                            "Failed to encode command `{trimmed}`: {}",
+                            format_encode_error(error)
+                        );
+                        let _ = writer_action_tx.send(Action::IncomingMessage(message));
+                    }
                 }
             }
         });
@@ -385,5 +400,28 @@ impl App {
         }
 
         let _ = writer_task.await;
+    }
+}
+
+fn format_encode_error(error: EncodeError) -> String {
+    match error {
+        EncodeError::Empty => "command is empty".into(),
+        EncodeError::UnknownMethod => "unknown method".into(),
+        EncodeError::UnknownOperation => "unknown operation".into(),
+        EncodeError::UnsupportedOperation { method, operation } => format!(
+            "unsupported operation {:?} for method {:?}",
+            operation, method
+        ),
+        EncodeError::MissingOperation => "missing operation keyword".into(),
+        EncodeError::MissingArgument { index } => {
+            format!("missing argument at position {}", index + 1)
+        }
+        EncodeError::UnexpectedArgument { index } => {
+            format!("unexpected argument starting at position {}", index + 1)
+        }
+        EncodeError::InvalidArgument { index } => {
+            format!("invalid argument at position {}", index + 1)
+        }
+        EncodeError::OutputTooSmall => "output buffer is too small".into(),
     }
 }
