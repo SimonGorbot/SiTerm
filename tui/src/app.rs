@@ -19,8 +19,8 @@ use crate::{
 };
 
 use protocol_host::{
-    encode_command, EncodeError, HANDSHAKE_COMMAND, HANDSHAKE_DELIMITER, HANDSHAKE_RESPONSE,
-    HANDSHAKE_TIMEOUT,
+    EncodeError, HANDSHAKE_COMMAND, HANDSHAKE_DELIMITER, HANDSHAKE_RESPONSE, HANDSHAKE_TIMEOUT,
+    encode_command,
 };
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -366,7 +366,7 @@ impl App {
                     }
                     Err(error) => {
                         let message = format!(
-                            "Failed to encode command `{trimmed}`: {}",
+                            "Error: Failed to encode command `{trimmed}`: {}",
                             format_encode_error(error)
                         );
                         let _ = writer_action_tx.send(Action::IncomingMessage(message));

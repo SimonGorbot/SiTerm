@@ -4,9 +4,9 @@ use color_eyre::Result;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style, Stylize},
+    style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
 };
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -22,6 +22,18 @@ enum InputMode {
     Editing,
 }
 
+#[derive(Debug, Clone)]
+struct MessageLine {
+    text: String,
+    style: Style,
+}
+
+impl MessageLine {
+    fn new(text: String, style: Style) -> Self {
+        Self { text, style }
+    }
+}
+
 pub struct TerminalScreen {
     action_tx: Option<UnboundedSender<Action>>,
     #[allow(dead_code)]
@@ -30,7 +42,7 @@ pub struct TerminalScreen {
     input_mode: InputMode,
     command_buffer: String,
     command_history: VecDeque<String>,
-    incoming_messages: VecDeque<String>,
+    incoming_messages: VecDeque<MessageLine>,
     connection_label: Option<String>,
     cursor_index: usize,
     history_position: Option<usize>,
@@ -83,14 +95,22 @@ impl TerminalScreen {
         self.command_history.push_back(command);
     }
 
-    fn push_message(&mut self, message: String) {
-        if message.is_empty() {
+    fn push_message(&mut self, message: MessageLine) {
+        if message.text.is_empty() {
             return;
         }
         if self.incoming_messages.len() >= MESSAGE_LIMIT {
             self.incoming_messages.pop_front();
         }
         self.incoming_messages.push_back(message);
+    }
+
+    fn style_for_message(message: &str) -> Style {
+        if message.starts_with("Error:") || message.starts_with("Failed to encode command") {
+            Style::default().fg(Color::Red)
+        } else {
+            Style::default()
+        }
     }
 
     fn enter_edit_mode(&mut self) {
@@ -302,7 +322,8 @@ impl Component for TerminalScreen {
                 self.reset_history_navigation();
             }
             Action::IncomingMessage(message) => {
-                self.push_message(message);
+                let style = Self::style_for_message(&message);
+                self.push_message(MessageLine::new(message, style));
             }
             Action::ConnectionEstablished { port, baud_rate } => {
                 self.connection_label = Some(format!("{port} @ {baud_rate} baud"));
@@ -389,16 +410,6 @@ impl Component for TerminalScreen {
             layout[2],
         );
 
-        let mut message_lines: Vec<Line> = self
-            .incoming_messages
-            .iter()
-            .rev()
-            .map(|msg| Line::from(msg.clone()))
-            .collect();
-        if message_lines.is_empty() {
-            message_lines.push(Line::from("No messages received yet."));
-        }
-
         let bottom_cat = Span::styled(
             " ᓚᘏᗢ ",
             Style::default()
@@ -406,15 +417,36 @@ impl Component for TerminalScreen {
                 .add_modifier(Modifier::BOLD),
         );
 
-        frame.render_widget(
-            Paragraph::new(message_lines).block(
-                Block::default()
-                    .title("Device Messages")
-                    .title_bottom(bottom_cat)
-                    .borders(Borders::ALL),
-            ),
-            layout[3],
-        );
+        let message_block = Block::default()
+            .title("Device Messages")
+            .title_bottom(bottom_cat)
+            .borders(Borders::ALL);
+
+        let message_area = message_block.inner(layout[3]);
+        let available_width = message_area.width as usize;
+
+        let mut message_items: Vec<ListItem> = self
+            .incoming_messages
+            .iter()
+            .rev()
+            .map(|msg| {
+                let rendered = if available_width == 0 {
+                    msg.text.clone()
+                } else {
+                    let truncated: String = msg.text.chars().take(available_width).collect();
+                    format!("{:<width$}", truncated, width = available_width)
+                };
+
+                ListItem::new(Line::from(vec![Span::styled(rendered, msg.style)]))
+            })
+            .collect();
+
+        if message_items.is_empty() {
+            message_items.push(ListItem::new(Line::from("No messages received yet.")));
+        }
+
+        frame.render_widget(Clear, layout[3]);
+        frame.render_widget(List::new(message_items).block(message_block), layout[3]);
 
         Ok(())
     }
