@@ -59,18 +59,3 @@ pub fn encode_i2c_write(remainder: &str, output: &mut Vec<u8>) -> Result<usize, 
 
     Ok(output.len())
 }
-
-// TODO: Complete continuous implementations
-pub fn encode_i2c_read_continuous(
-    remainder: &str,
-    output: &mut Vec<u8>,
-) -> Result<usize, EncodeError> {
-    encode_i2c_read(remainder, output)
-}
-
-pub fn encode_i2c_write_continuous(
-    remainder: &str,
-    output: &mut Vec<u8>,
-) -> Result<usize, EncodeError> {
-    encode_i2c_write(remainder, output)
-}

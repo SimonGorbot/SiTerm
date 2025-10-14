@@ -70,8 +70,6 @@ impl Method {
 pub enum Operation {
     Read = 0x01,
     Write = 0x02,
-    ReadContinuous = 0x03,
-    WriteContinuous = 0x04,
 }
 
 impl TryFrom<&str> for Operation {
@@ -81,12 +79,6 @@ impl TryFrom<&str> for Operation {
             Ok(Self::Read)
         } else if value.eq_ignore_ascii_case("w") || value.eq_ignore_ascii_case("write") {
             Ok(Self::Write)
-        } else if value.eq_ignore_ascii_case("rc") || value.eq_ignore_ascii_case("read_continuous")
-        {
-            Ok(Self::ReadContinuous)
-        } else if value.eq_ignore_ascii_case("wc") || value.eq_ignore_ascii_case("write_continuous")
-        {
-            Ok(Self::WriteContinuous)
         } else {
             Err(())
         }
@@ -102,8 +94,6 @@ impl Operation {
         match byte {
             x if x == Self::Read as u8 => Some(Self::Read),
             x if x == Self::Write as u8 => Some(Self::Write),
-            x if x == Self::ReadContinuous as u8 => Some(Self::ReadContinuous),
-            x if x == Self::WriteContinuous as u8 => Some(Self::WriteContinuous),
             _ => None,
         }
     }

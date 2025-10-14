@@ -1,8 +1,6 @@
 mod i2c;
 
-use crate::i2c::{
-    encode_i2c_read, encode_i2c_read_continuous, encode_i2c_write, encode_i2c_write_continuous,
-};
+use crate::i2c::{encode_i2c_read, encode_i2c_write};
 pub use protocol::*;
 
 use std::vec::Vec;
@@ -70,13 +68,7 @@ pub fn encode_command_into(input: &str, output: &mut Vec<u8>) -> Result<usize, E
         .any(|def| def.method == method && def.operation == operation)
         || matches!(
             (method, operation),
-            (
-                Method::I2c,
-                Operation::Read
-                    | Operation::Write
-                    | Operation::ReadContinuous
-                    | Operation::WriteContinuous
-            )
+            (Method::I2c, Operation::Read | Operation::Write)
         );
 
     if !supported {
@@ -92,12 +84,6 @@ pub fn encode_command_into(input: &str, output: &mut Vec<u8>) -> Result<usize, E
         (Method::Echo, Operation::Write) => encode_echo(post_operation_remaining, output),
         (Method::I2c, Operation::Read) => encode_i2c_read(post_operation_remaining, output),
         (Method::I2c, Operation::Write) => encode_i2c_write(post_operation_remaining, output),
-        (Method::I2c, Operation::ReadContinuous) => {
-            encode_i2c_read_continuous(post_operation_remaining, output)
-        }
-        (Method::I2c, Operation::WriteContinuous) => {
-            encode_i2c_write_continuous(post_operation_remaining, output)
-        }
         _ => Err(EncodeError::UnsupportedOperation { method, operation }),
     }
 }
@@ -170,37 +156,6 @@ mod tests {
                 0x02,
                 0x01,
                 0x02
-            ]
-        );
-    }
-
-    #[test]
-    fn encode_i2c_read_continuous_basic() {
-        let buf = encode_command("i2c read_continuous 0x80 0x11 0x04").unwrap();
-        assert_eq!(
-            buf,
-            vec![
-                Method::I2c.as_byte(),
-                Operation::ReadContinuous.as_byte(),
-                0x80,
-                0x11,
-                0x04
-            ]
-        );
-    }
-
-    #[test]
-    fn encode_i2c_write_continuous_basic() {
-        let buf = encode_command("i2c write_continuous 0x80 0x11 0x01").unwrap();
-        assert_eq!(
-            buf,
-            vec![
-                Method::I2c.as_byte(),
-                Operation::WriteContinuous.as_byte(),
-                0x80,
-                0x11,
-                0x01,
-                0x01
             ]
         );
     }
