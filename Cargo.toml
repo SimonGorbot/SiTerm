@@ -1,4 +1,4 @@
 [workspace]
-members = ["protocol", "tui", "fw/rp2040"]
-default-members = ["protocol", "tui"]
+members = ["protocol", "protocol-host", "tui", "fw/rp2040"]
+default-members = ["protocol", "protocol-host", "tui"]
 resolver = "2"

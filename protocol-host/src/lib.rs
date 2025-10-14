@@ -1,0 +1,219 @@
+mod i2c;
+
+use crate::i2c::{
+    encode_i2c_read, encode_i2c_read_continuous, encode_i2c_write, encode_i2c_write_continuous,
+};
+pub use protocol::*;
+
+use std::vec::Vec;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EncodeError {
+    Empty,
+    UnknownMethod,
+    UnknownOperation,
+    UnsupportedOperation {
+        method: Method,
+        operation: Operation,
+    },
+    MissingOperation,
+    MissingArgument {
+        index: usize,
+    },
+    UnexpectedArgument {
+        index: usize,
+    },
+    InvalidArgument {
+        index: usize,
+    },
+    OutputTooSmall,
+}
+
+pub fn encode_command(input: &str) -> Result<Vec<u8>, EncodeError> {
+    let mut buffer = Vec::with_capacity(input.len() + 1);
+    let len = encode_command_into(input, &mut buffer)?;
+    buffer.truncate(len);
+    Ok(buffer)
+}
+
+pub fn encode_command_into(input: &str, output: &mut Vec<u8>) -> Result<usize, EncodeError> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(EncodeError::Empty);
+    }
+
+    let mut parts = trimmed.splitn(2, " ");
+    let method_keyword = parts.next().unwrap_or("");
+    let post_method_remaining = parts.next().unwrap_or("").trim_start();
+
+    let method = Method::try_from(method_keyword).map_err(|_| EncodeError::UnknownMethod)?;
+
+    // If method is echo. Default to write operation and send everything after 'echo'.
+    let (operation, post_operation_remaining) = if method == Method::Echo {
+        (Operation::Write, post_method_remaining)
+    } else {
+        if post_method_remaining.is_empty() {
+            return Err(EncodeError::MissingOperation);
+        }
+
+        let mut op_parts = post_method_remaining.splitn(2, " ");
+        let operation_keyword = op_parts.next().unwrap_or("");
+        let remainder = op_parts.next().unwrap_or("").trim_start();
+
+        let operation =
+            Operation::try_from(operation_keyword).map_err(|_| EncodeError::UnknownOperation)?;
+        (operation, remainder)
+    };
+
+    let supported = COMMAND_DICTIONARY
+        .iter()
+        .any(|def| def.method == method && def.operation == operation)
+        || matches!(
+            (method, operation),
+            (
+                Method::I2c,
+                Operation::Read
+                    | Operation::Write
+                    | Operation::ReadContinuous
+                    | Operation::WriteContinuous
+            )
+        );
+
+    if !supported {
+        return Err(EncodeError::UnsupportedOperation { method, operation });
+    }
+
+    output.clear();
+
+    output.push(method.as_byte());
+    output.push(operation.as_byte());
+
+    match (method, operation) {
+        (Method::Echo, Operation::Write) => encode_echo(post_operation_remaining, output),
+        (Method::I2c, Operation::Read) => encode_i2c_read(post_operation_remaining, output),
+        (Method::I2c, Operation::Write) => encode_i2c_write(post_operation_remaining, output),
+        (Method::I2c, Operation::ReadContinuous) => {
+            encode_i2c_read_continuous(post_operation_remaining, output)
+        }
+        (Method::I2c, Operation::WriteContinuous) => {
+            encode_i2c_write_continuous(post_operation_remaining, output)
+        }
+        _ => Err(EncodeError::UnsupportedOperation { method, operation }),
+    }
+}
+
+fn encode_echo(remainder: &str, output: &mut Vec<u8>) -> Result<usize, EncodeError> {
+    output.extend_from_slice(remainder.as_bytes());
+    Ok(output.len())
+}
+
+fn parse_u8(token: &str, index: usize) -> Result<u8, EncodeError> {
+    let token = token.trim();
+    if token.is_empty() {
+        return Err(EncodeError::MissingArgument { index });
+    }
+
+    let (radix, digits) = if let Some(stripped) = token.strip_prefix("0x") {
+        (16, stripped)
+    } else if let Some(stripped) = token.strip_prefix("0b") {
+        (2, stripped)
+    } else {
+        (10, token)
+    };
+
+    if digits.is_empty() {
+        return Err(EncodeError::InvalidArgument { index });
+    }
+
+    u8::from_str_radix(digits, radix).map_err(|_| EncodeError::InvalidArgument { index })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encode_echo_roundtrip() {
+        let input = "echo hello world";
+        let buf = encode_command(input).unwrap();
+        assert_eq!(buf[0], Method::Echo.as_byte());
+        assert_eq!(buf[1], Operation::Write.as_byte());
+        assert_eq!(&buf[2..], b"hello world");
+    }
+
+    #[test]
+    fn encode_i2c_read_hex_args() {
+        let buf = encode_command("i2c read 0x80 0x11 0x04").unwrap();
+        assert_eq!(
+            buf,
+            vec![
+                Method::I2c.as_byte(),
+                Operation::Read.as_byte(),
+                0x80,
+                0x11,
+                0x04
+            ]
+        );
+    }
+
+    #[test]
+    fn encode_i2c_read_errors_on_missing_argument() {
+        let mut buf = Vec::new();
+        let err = encode_command_into("i2c read 0x80 0x11", &mut buf).unwrap_err();
+        assert!(matches!(err, EncodeError::MissingArgument { index: 2 }));
+    }
+
+    #[test]
+    fn encode_i2c_write_basic() {
+        let buf = encode_command("i2c write 0x80 0x11 0x01 0x02").unwrap();
+        assert_eq!(
+            buf,
+            vec![
+                Method::I2c.as_byte(),
+                Operation::Write.as_byte(),
+                0x80,
+                0x11,
+                0x02,
+                0x01,
+                0x02
+            ]
+        );
+    }
+
+    #[test]
+    fn encode_i2c_read_continuous_basic() {
+        let buf = encode_command("i2c read_continuous 0x80 0x11 0x04").unwrap();
+        assert_eq!(
+            buf,
+            vec![
+                Method::I2c.as_byte(),
+                Operation::ReadContinuous.as_byte(),
+                0x80,
+                0x11,
+                0x04
+            ]
+        );
+    }
+
+    #[test]
+    fn encode_i2c_write_continuous_basic() {
+        let buf = encode_command("i2c write_continuous 0x80 0x11 0x01").unwrap();
+        assert_eq!(
+            buf,
+            vec![
+                Method::I2c.as_byte(),
+                Operation::WriteContinuous.as_byte(),
+                0x80,
+                0x11,
+                0x01,
+                0x01
+            ]
+        );
+    }
+
+    #[test]
+    fn encode_unknown_command() {
+        let err = encode_command("foo").unwrap_err();
+        assert!(matches!(err, EncodeError::UnknownMethod));
+    }
+}
