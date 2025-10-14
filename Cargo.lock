@@ -469,7 +469,7 @@ dependencies = [
  "lazy_static",
  "libc",
  "pretty_assertions",
- "protocol",
+ "protocol-host",
  "ratatui",
  "serde",
  "serde_json",
@@ -3399,6 +3399,13 @@ dependencies = [
 [[package]]
 name = "protocol"
 version = "0.1.0"
+
+[[package]]
+name = "protocol-host"
+version = "0.1.0"
+dependencies = [
+ "protocol",
+]
 
 [[package]]
 name = "quick-xml"

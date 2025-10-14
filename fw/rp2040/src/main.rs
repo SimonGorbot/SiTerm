@@ -81,7 +81,9 @@ async fn main(_spawner: Spawner) {
                 }
 
                 if handshake_complete {
-                    if let Err(err) = echo_with_prefix(&mut class, &read_buf[..len]).await {
+                    if let Err(err) =
+                        echo_post_operation_bytes(&mut class, &read_buf[..len]).await
+                    {
                         if matches!(err, EndpointError::Disabled) {
                             break 'connected;
                         }
@@ -132,7 +134,11 @@ async fn main(_spawner: Spawner) {
 
                                 if idx < len {
                                     if let Err(err) =
-                                        echo_with_prefix(&mut class, &read_buf[idx..len]).await
+                                        echo_post_operation_bytes(
+                                            &mut class,
+                                            &read_buf[idx..len],
+                                        )
+                                        .await
                                     {
                                         if matches!(err, EndpointError::Disabled) {
                                             break 'connected;
@@ -168,17 +174,18 @@ where
     }
 }
 
-async fn echo_with_prefix<'d, D>(
+async fn echo_post_operation_bytes<'d, D>(
     class: &mut CdcAcmClass<'d, D>,
     payload: &[u8],
 ) -> Result<(), EndpointError>
 where
     D: embassy_usb::driver::Driver<'d>,
 {
-    if payload.is_empty() {
+    let post_operation = payload.get(2..).unwrap_or(&[]);
+    if post_operation.is_empty() {
         return Ok(());
     }
 
     write_packet_with_retry(class, ECHO_PREFIX).await?;
-    write_packet_with_retry(class, payload).await
+    write_packet_with_retry(class, post_operation).await
 }
