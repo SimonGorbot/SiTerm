@@ -81,7 +81,8 @@ async fn main(_spawner: Spawner) {
                 }
 
                 if handshake_complete {
-                    if let Err(err) = echo_post_operation_bytes(&mut class, &read_buf[..len]).await
+                    if let Err(err) =
+                        echo_post_operation_bytes(&mut class, &read_buf[..len]).await
                     {
                         if matches!(err, EndpointError::Disabled) {
                             break 'connected;
@@ -133,8 +134,11 @@ async fn main(_spawner: Spawner) {
 
                                 if idx < len {
                                     if let Err(err) =
-                                        echo_post_operation_bytes(&mut class, &read_buf[idx..len])
-                                            .await
+                                        echo_post_operation_bytes(
+                                            &mut class,
+                                            &read_buf[idx..len],
+                                        )
+                                        .await
                                     {
                                         if matches!(err, EndpointError::Disabled) {
                                             break 'connected;
