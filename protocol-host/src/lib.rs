@@ -1,7 +1,9 @@
 mod i2c;
 
 use crate::i2c::{encode_i2c_read, encode_i2c_write};
+use postcard::{self, Error as PostcardError};
 pub use protocol::*;
+use protocol::transport::{self as transport_layer, Frame as TransportFrame, FrameError};
 
 use std::vec::Vec;
 
@@ -25,6 +27,36 @@ pub enum EncodeError {
         index: usize,
     },
     OutputTooSmall,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransportCodecError {
+    Encode(PostcardError),
+    Decode(PostcardError),
+}
+
+pub fn encode_transport_frame(payload: &[u8]) -> Result<Vec<u8>, TransportCodecError> {
+    let frame = TransportFrame::new(payload);
+    postcard::to_allocvec(&frame).map_err(TransportCodecError::Encode)
+}
+
+pub fn try_decode_transport_frame(
+    buffer: &[u8],
+) -> Result<Option<(Vec<u8>, usize)>, TransportCodecError> {
+    match transport_layer::take_from_bytes(buffer) {
+        Ok((frame, remaining)) => {
+            let consumed = buffer.len() - remaining.len();
+            Ok(Some((frame.payload.to_vec(), consumed)))
+        }
+        Err(FrameError::Deserialize(err)) => {
+            if err == PostcardError::DeserializeUnexpectedEnd {
+                Ok(None)
+            } else {
+                Err(TransportCodecError::Decode(err))
+            }
+        }
+        Err(FrameError::Serialize(err)) => Err(TransportCodecError::Decode(err)),
+    }
 }
 
 pub fn encode_command(input: &str) -> Result<Vec<u8>, EncodeError> {
@@ -164,5 +196,14 @@ mod tests {
     fn encode_unknown_command() {
         let err = encode_command("foo").unwrap_err();
         assert!(matches!(err, EncodeError::UnknownMethod));
+    }
+
+    #[test]
+    fn transport_roundtrip() {
+        let payload = vec![0xAA, 0x00, 0x55];
+        let encoded = encode_transport_frame(&payload).unwrap();
+        let (decoded, used) = try_decode_transport_frame(&encoded).unwrap().unwrap();
+        assert_eq!(used, encoded.len());
+        assert_eq!(decoded, payload);
     }
 }

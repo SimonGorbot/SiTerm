@@ -14,6 +14,44 @@ uart will have byte mode and string mode
 
 use core::time::Duration;
 
+pub mod transport {
+    use postcard::{self, Error as PostcardError};
+    use serde::{Deserialize, Serialize};
+
+    /// Small wrapper around a payload that gets serialized with postcard to
+    /// provide framing for arbitrary byte streams.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct Frame<'a> {
+        #[serde(borrow)]
+        pub payload: &'a [u8],
+    }
+
+    impl<'a> Frame<'a> {
+        pub const fn new(payload: &'a [u8]) -> Self {
+            Self { payload }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum FrameError {
+        Serialize(PostcardError),
+        Deserialize(PostcardError),
+    }
+
+    pub fn encode_into(payload: &[u8], buffer: &mut [u8]) -> Result<usize, FrameError> {
+        let frame = Frame::new(payload);
+        postcard::to_slice(&frame, buffer)
+            .map(|written| written.len())
+            .map_err(FrameError::Serialize)
+    }
+
+    pub fn take_from_bytes<'a>(
+        bytes: &'a [u8],
+    ) -> Result<(Frame<'a>, &'a [u8]), FrameError> {
+        postcard::take_from_bytes::<Frame<'a>>(bytes).map_err(FrameError::Deserialize)
+    }
+}
+
 pub const HANDSHAKE_COMMAND: &str = "SiTerm?";
 pub const HANDSHAKE_RESPONSE: &str = "SiTerm v1.0";
 pub const HANDSHAKE_DELIMITER: &str = "\n";
