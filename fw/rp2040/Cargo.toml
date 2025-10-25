@@ -52,7 +52,7 @@ futures = { version = "0.3.31", default-features = false, features = [
 ] }
 heapless = "0.8"
 
-protocol = { path = "../../protocol" }
+protocol = { path = "../../protocol", default-features = false }
 
 
 embedded-hal-1 = { package = "embedded-hal", version = "=1.0.0" }
