@@ -12,11 +12,16 @@ uart will have byte mode and string mode
 
 #![cfg_attr(not(test), no_std)]
 
+#[cfg(feature = "alloc")]
+extern crate alloc;
+
 use core::time::Duration;
 
 pub mod transport {
-    use postcard::{self, Error as PostcardError};
+    use postcard;
     use serde::{Deserialize, Serialize};
+
+    pub use postcard::Error as PostcardError;
 
     /// Small wrapper around a payload that gets serialized with postcard to
     /// provide framing for arbitrary byte streams.
@@ -209,6 +214,10 @@ pub fn decode_command(buffer: &[u8]) -> Result<Command<'_>, ProtocolError> {
         _ => Err(ProtocolError::UnsupportedOperation { method, operation }),
     }
 }
+
+
+#[cfg(feature = "alloc")]
+pub mod host;
 
 #[cfg(test)]
 mod tests {

@@ -18,9 +18,12 @@ use crate::{
     tui::{Event, Tui},
 };
 
-use protocol_host::{
-    EncodeError, TransportCodecError, HANDSHAKE_COMMAND, HANDSHAKE_DELIMITER, HANDSHAKE_RESPONSE,
-    HANDSHAKE_TIMEOUT, encode_command, encode_transport_frame, try_decode_transport_frame,
+use protocol::{
+    host::{
+        encode_command, encode_transport_frame, try_decode_transport_frame, EncodeError,
+        TransportCodecError,
+    },
+    HANDSHAKE_COMMAND, HANDSHAKE_DELIMITER, HANDSHAKE_RESPONSE, HANDSHAKE_TIMEOUT,
 };
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
