@@ -6,6 +6,8 @@ use protocol::transport;
 
 use crate::{ENCODED_FRAME_BUFFER_SIZE, READ_BUFFER_SIZE, WRITE_RETRY_TIMEOUT_MS};
 
+/// Attempts to write using the USB device class within timeout period ([`WRITE_RETRY_TIMEOUT_MS`]).
+/// If write fails due to buffer overflow within the timeout period, it will wait 10ms before retrying.
 pub async fn write_packet_with_retry<'d, D>(
     class: &mut CdcAcmClass<'d, D>,
     data: &[u8],
@@ -28,6 +30,9 @@ where
     }
 }
 
+/// Encodes payload into the protocol frame format and sends it over USB with timeout using [`write_packet_with_retry`].
+/// Payload is sent in chunks of size [`READ_BUFFER_SIZE`].
+/// If encoding fails, no data is sent and `Ok(())` is returned.
 pub async fn send_framed_payload<'d, D>(
     class: &mut CdcAcmClass<'d, D>,
     payload: &[u8],
@@ -51,6 +56,9 @@ where
     Ok(())
 }
 
+/// Remove the first `count` bytes from this fixed-capacity buffer in place.
+/// Clears the entire buffer if `count` is at least its current length; otherwise
+/// shifts the remaining bytes down and truncates to the new length.
 pub fn drop_prefix<const N: usize>(buffer: &mut Vec<u8, N>, count: usize) {
     if count == 0 {
         return;
