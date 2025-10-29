@@ -2,8 +2,8 @@ use alloc::vec::Vec;
 use postcard::{self, Error as PostcardError};
 
 use crate::{
-    transport::{self, Frame as TransportFrame, FrameError},
     COMMAND_DICTIONARY, Method, Operation,
+    transport::{self, Frame as TransportFrame, FrameError},
 };
 
 pub mod i2c;

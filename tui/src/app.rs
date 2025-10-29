@@ -19,11 +19,11 @@ use crate::{
 };
 
 use protocol::{
-    host::{
-        encode_command, encode_transport_frame, try_decode_transport_frame, EncodeError,
-        TransportCodecError,
-    },
     HANDSHAKE_COMMAND, HANDSHAKE_DELIMITER, HANDSHAKE_RESPONSE, HANDSHAKE_TIMEOUT,
+    host::{
+        EncodeError, TransportCodecError, encode_command, encode_transport_frame,
+        try_decode_transport_frame,
+    },
 };
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

@@ -50,9 +50,7 @@ pub mod transport {
             .map_err(FrameError::Serialize)
     }
 
-    pub fn take_from_bytes<'a>(
-        bytes: &'a [u8],
-    ) -> Result<(Frame<'a>, &'a [u8]), FrameError> {
+    pub fn take_from_bytes<'a>(bytes: &'a [u8]) -> Result<(Frame<'a>, &'a [u8]), FrameError> {
         postcard::take_from_bytes::<Frame<'a>>(bytes).map_err(FrameError::Deserialize)
     }
 }
@@ -214,7 +212,6 @@ pub fn decode_command(buffer: &[u8]) -> Result<Command<'_>, ProtocolError> {
         _ => Err(ProtocolError::UnsupportedOperation { method, operation }),
     }
 }
-
 
 #[cfg(feature = "alloc")]
 pub mod host;
