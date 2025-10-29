@@ -3,4 +3,11 @@ name = "protocol"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["alloc"]
+alloc = ["postcard/alloc"]
+std = ["alloc", "postcard/use-std"]
+
 [dependencies]
+postcard = { version = "1.1.1", default-features = false }
+serde = { version = "1.0.211", default-features = false, features = ["derive"] }

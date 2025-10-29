@@ -1,9 +1,12 @@
-mod i2c;
+use alloc::vec::Vec;
+use postcard::{self, Error as PostcardError};
 
-use crate::i2c::{encode_i2c_read, encode_i2c_write};
-pub use protocol::*;
+use crate::{
+    transport::{self, Frame as TransportFrame, FrameError},
+    COMMAND_DICTIONARY, Method, Operation,
+};
 
-use std::vec::Vec;
+pub mod i2c;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EncodeError {
@@ -27,6 +30,36 @@ pub enum EncodeError {
     OutputTooSmall,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransportCodecError {
+    Encode(PostcardError),
+    Decode(PostcardError),
+}
+
+pub fn encode_transport_frame(payload: &[u8]) -> Result<Vec<u8>, TransportCodecError> {
+    let frame = TransportFrame::new(payload);
+    postcard::to_allocvec(&frame).map_err(TransportCodecError::Encode)
+}
+
+pub fn try_decode_transport_frame(
+    buffer: &[u8],
+) -> Result<Option<(Vec<u8>, usize)>, TransportCodecError> {
+    match transport::take_from_bytes(buffer) {
+        Ok((frame, remaining)) => {
+            let consumed = buffer.len() - remaining.len();
+            Ok(Some((frame.payload.to_vec(), consumed)))
+        }
+        Err(FrameError::Deserialize(err)) => {
+            if err == PostcardError::DeserializeUnexpectedEnd {
+                Ok(None)
+            } else {
+                Err(TransportCodecError::Decode(err))
+            }
+        }
+        Err(FrameError::Serialize(err)) => Err(TransportCodecError::Decode(err)),
+    }
+}
+
 pub fn encode_command(input: &str) -> Result<Vec<u8>, EncodeError> {
     let mut buffer = Vec::with_capacity(input.len() + 1);
     let len = encode_command_into(input, &mut buffer)?;
@@ -46,7 +79,6 @@ pub fn encode_command_into(input: &str, output: &mut Vec<u8>) -> Result<usize, E
 
     let method = Method::try_from(method_keyword).map_err(|_| EncodeError::UnknownMethod)?;
 
-    // If method is echo. Default to write operation and send everything after 'echo'.
     let (operation, post_operation_remaining) = if method == Method::Echo {
         (Operation::Write, post_method_remaining)
     } else {
@@ -82,8 +114,8 @@ pub fn encode_command_into(input: &str, output: &mut Vec<u8>) -> Result<usize, E
 
     match (method, operation) {
         (Method::Echo, Operation::Write) => encode_echo(post_operation_remaining, output),
-        (Method::I2c, Operation::Read) => encode_i2c_read(post_operation_remaining, output),
-        (Method::I2c, Operation::Write) => encode_i2c_write(post_operation_remaining, output),
+        (Method::I2c, Operation::Read) => i2c::encode_i2c_read(post_operation_remaining, output),
+        (Method::I2c, Operation::Write) => i2c::encode_i2c_write(post_operation_remaining, output),
         _ => Err(EncodeError::UnsupportedOperation { method, operation }),
     }
 }
@@ -93,7 +125,7 @@ fn encode_echo(remainder: &str, output: &mut Vec<u8>) -> Result<usize, EncodeErr
     Ok(output.len())
 }
 
-fn parse_u8(token: &str, index: usize) -> Result<u8, EncodeError> {
+pub(super) fn parse_u8(token: &str, index: usize) -> Result<u8, EncodeError> {
     let token = token.trim();
     if token.is_empty() {
         return Err(EncodeError::MissingArgument { index });
@@ -164,5 +196,14 @@ mod tests {
     fn encode_unknown_command() {
         let err = encode_command("foo").unwrap_err();
         assert!(matches!(err, EncodeError::UnknownMethod));
+    }
+
+    #[test]
+    fn transport_roundtrip() {
+        let payload = vec![0xAA, 0x00, 0x55];
+        let encoded = encode_transport_frame(&payload).unwrap();
+        let (decoded, used) = try_decode_transport_frame(&encoded).unwrap().unwrap();
+        assert_eq!(used, encoded.len());
+        assert_eq!(decoded, payload);
     }
 }

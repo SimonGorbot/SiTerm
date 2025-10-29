@@ -13,7 +13,10 @@ use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
 use embassy_usb::driver::EndpointError;
 use embassy_usb::{Builder, Config};
 use heapless::Vec;
-use protocol::{HANDSHAKE_COMMAND, HANDSHAKE_DELIMITER, HANDSHAKE_RESPONSE};
+use protocol::{
+    transport::{self, FrameError, PostcardError},
+    Command, HANDSHAKE_COMMAND, HANDSHAKE_DELIMITER, HANDSHAKE_RESPONSE, decode_command,
+};
 use {defmt_rtt as _, panic_probe as _};
 
 bind_interrupts!(struct Irqs {
@@ -23,6 +26,9 @@ bind_interrupts!(struct Irqs {
 const READ_BUFFER_SIZE: usize = 64;
 const HANDSHAKE_BUFFER_SIZE: usize = 64;
 const ECHO_PREFIX: &[u8] = b"rp2040: ";
+const FRAME_BUFFER_SIZE: usize = 512;
+const MAX_COMMAND_SIZE: usize = 256;
+const ENCODED_FRAME_BUFFER_SIZE: usize = 320;
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
@@ -67,6 +73,7 @@ async fn main(_spawner: Spawner) {
             class.wait_connection().await;
 
             let mut handshake_buffer: Vec<u8, HANDSHAKE_BUFFER_SIZE> = Vec::new();
+            let mut pending_frames: Vec<u8, FRAME_BUFFER_SIZE> = Vec::new();
             let mut handshake_complete = false;
 
             'connected: loop {
@@ -82,7 +89,8 @@ async fn main(_spawner: Spawner) {
 
                 if handshake_complete {
                     if let Err(err) =
-                        echo_post_operation_bytes(&mut class, &read_buf[..len]).await
+                        process_transport_bytes(&mut class, &mut pending_frames, &read_buf[..len])
+                            .await
                     {
                         if matches!(err, EndpointError::Disabled) {
                             break 'connected;
@@ -131,14 +139,15 @@ async fn main(_spawner: Spawner) {
                                 }
                             } else {
                                 handshake_complete = true;
+                                pending_frames.clear();
 
                                 if idx < len {
-                                    if let Err(err) =
-                                        echo_post_operation_bytes(
-                                            &mut class,
-                                            &read_buf[idx..len],
-                                        )
-                                        .await
+                                    if let Err(err) = process_transport_bytes(
+                                        &mut class,
+                                        &mut pending_frames,
+                                        &read_buf[idx..len],
+                                    )
+                                    .await
                                     {
                                         if matches!(err, EndpointError::Disabled) {
                                             break 'connected;
@@ -174,18 +183,122 @@ where
     }
 }
 
-async fn echo_post_operation_bytes<'d, D>(
+async fn process_transport_bytes<'d, D>(
+    class: &mut CdcAcmClass<'d, D>,
+    pending_frames: &mut Vec<u8, FRAME_BUFFER_SIZE>,
+    data: &[u8],
+) -> Result<(), EndpointError>
+where
+    D: embassy_usb::driver::Driver<'d>,
+{
+    if pending_frames.extend_from_slice(data).is_err() {
+        pending_frames.clear();
+        return Ok(());
+    }
+
+    loop {
+        match transport::take_from_bytes(pending_frames.as_slice()) {
+            Ok((frame, remaining)) => {
+                let consumed = pending_frames.len() - remaining.len();
+                let mut command_buf: Vec<u8, MAX_COMMAND_SIZE> = Vec::new();
+
+                if command_buf.extend_from_slice(frame.payload).is_err() {
+                    drop_prefix(pending_frames, consumed);
+                    continue;
+                }
+
+                if let Ok(command) = decode_command(command_buf.as_slice()) {
+                    handle_command(class, command).await?;
+                }
+
+                drop_prefix(pending_frames, consumed);
+            }
+            Err(FrameError::Deserialize(err)) => {
+                if matches!(err, PostcardError::DeserializeUnexpectedEnd) {
+                    break;
+                } else {
+                    pending_frames.clear();
+                    break;
+                }
+            }
+            Err(FrameError::Serialize(_)) => {
+                pending_frames.clear();
+                break;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn handle_command<'d, D>(
+    class: &mut CdcAcmClass<'d, D>,
+    command: Command<'_>,
+) -> Result<(), EndpointError>
+where
+    D: embassy_usb::driver::Driver<'d>,
+{
+    match command {
+        Command::EchoWrite { payload } => send_echo_response(class, payload).await?,
+        _ => {}
+    }
+
+    Ok(())
+}
+
+async fn send_echo_response<'d, D>(
     class: &mut CdcAcmClass<'d, D>,
     payload: &[u8],
 ) -> Result<(), EndpointError>
 where
     D: embassy_usb::driver::Driver<'d>,
 {
-    let post_operation = payload.get(2..).unwrap_or(&[]);
-    if post_operation.is_empty() {
+    let mut response: Vec<u8, MAX_COMMAND_SIZE> = Vec::new();
+    if response.extend_from_slice(ECHO_PREFIX).is_err() {
+        return Ok(());
+    }
+    if response.extend_from_slice(payload).is_err() {
         return Ok(());
     }
 
-    write_packet_with_retry(class, ECHO_PREFIX).await?;
-    write_packet_with_retry(class, post_operation).await
+    send_framed_payload(class, response.as_slice()).await
+}
+
+async fn send_framed_payload<'d, D>(
+    class: &mut CdcAcmClass<'d, D>,
+    payload: &[u8],
+) -> Result<(), EndpointError>
+where
+    D: embassy_usb::driver::Driver<'d>,
+{
+    let mut frame_buf = [0u8; ENCODED_FRAME_BUFFER_SIZE];
+    let len = match transport::encode_into(payload, &mut frame_buf) {
+        Ok(len) => len,
+        Err(_) => return Ok(()),
+    };
+
+    let mut offset = 0;
+    while offset < len {
+        let end = (offset + READ_BUFFER_SIZE).min(len);
+        write_packet_with_retry(class, &frame_buf[offset..end]).await?;
+        offset = end;
+    }
+
+    Ok(())
+}
+
+fn drop_prefix<const N: usize>(buffer: &mut Vec<u8, N>, count: usize) {
+    if count == 0 {
+        return;
+    }
+    if count >= buffer.len() {
+        buffer.clear();
+        return;
+    }
+
+    let len = buffer.len();
+    for idx in count..len {
+        buffer[idx - count] = buffer[idx];
+    }
+    buffer.truncate(len - count);
 }

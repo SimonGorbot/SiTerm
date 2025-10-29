@@ -2,8 +2,8 @@ use color_eyre::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::Rect;
 use serde::{Deserialize, Serialize};
-use std::str;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use std::{fmt::Write, str};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tokio_serial::{SerialPort, SerialPortBuilderExt, SerialStream};
@@ -18,9 +18,12 @@ use crate::{
     tui::{Event, Tui},
 };
 
-use protocol_host::{
-    EncodeError, HANDSHAKE_COMMAND, HANDSHAKE_DELIMITER, HANDSHAKE_RESPONSE, HANDSHAKE_TIMEOUT,
-    encode_command,
+use protocol::{
+    host::{
+        encode_command, encode_transport_frame, try_decode_transport_frame, EncodeError,
+        TransportCodecError,
+    },
+    HANDSHAKE_COMMAND, HANDSHAKE_DELIMITER, HANDSHAKE_RESPONSE, HANDSHAKE_TIMEOUT,
 };
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -355,15 +358,23 @@ impl App {
                 }
 
                 match encode_command(trimmed) {
-                    Ok(mut payload) => {
-                        payload.extend_from_slice(HANDSHAKE_DELIMITER.as_bytes());
-                        if let Err(e) = writer_half.write_all(&payload).await {
-                            let _ = writer_action_tx.send(Action::ConnectionFailed(format!(
-                                "Serial write failed: {e}"
-                            )));
-                            break;
+                    Ok(payload) => match encode_transport_frame(&payload) {
+                        Ok(frame) => {
+                            if let Err(e) = writer_half.write_all(&frame).await {
+                                let _ = writer_action_tx.send(Action::ConnectionFailed(format!(
+                                    "Serial write failed: {e}"
+                                )));
+                                break;
+                            }
                         }
-                    }
+                        Err(err) => {
+                            let message = format!(
+                                "Error: Failed to frame command `{trimmed}`: {}",
+                                format_transport_error(err)
+                            );
+                            let _ = writer_action_tx.send(Action::IncomingMessage(message));
+                        }
+                    },
                     Err(error) => {
                         let message = format!(
                             "Error: Failed to encode command `{trimmed}`: {}",
@@ -376,19 +387,33 @@ impl App {
         });
 
         let mut reader = BufReader::new(reader_half);
-        let mut line = String::new();
-        loop {
-            line.clear();
-            match reader.read_line(&mut line).await {
+        let mut pending = Vec::new();
+        let mut read_buffer = [0u8; 512];
+        'reader: loop {
+            match reader.read(&mut read_buffer).await {
                 Ok(0) => {
                     let _ = action_tx
                         .send(Action::ConnectionFailed("Serial connection closed.".into()));
                     break;
                 }
-                Ok(_) => {
-                    let message = line.trim_end_matches(|c| c == '\r' || c == '\n');
-                    if !message.is_empty() {
-                        let _ = action_tx.send(Action::IncomingMessage(message.into()));
+                Ok(n) => {
+                    pending.extend_from_slice(&read_buffer[..n]);
+                    loop {
+                        match try_decode_transport_frame(&pending) {
+                            Ok(Some((payload, consumed))) => {
+                                pending.drain(..consumed);
+                                let message = payload_to_message(payload);
+                                let _ = action_tx.send(Action::IncomingMessage(message));
+                            }
+                            Ok(None) => break,
+                            Err(err) => {
+                                let _ = action_tx.send(Action::ConnectionFailed(format!(
+                                    "Failed to decode frame: {}",
+                                    format_transport_error(err)
+                                )));
+                                break 'reader;
+                            }
+                        }
                     }
                 }
                 Err(e) => {
@@ -424,4 +449,34 @@ fn format_encode_error(error: EncodeError) -> String {
         }
         EncodeError::OutputTooSmall => "output buffer is too small".into(),
     }
+}
+
+fn format_transport_error(error: TransportCodecError) -> String {
+    match error {
+        TransportCodecError::Encode(err) => format!("encode error: {err}"),
+        TransportCodecError::Decode(err) => format!("decode error: {err}"),
+    }
+}
+
+fn payload_to_message(payload: Vec<u8>) -> String {
+    match String::from_utf8(payload) {
+        Ok(text) => text,
+        Err(err) => bytes_to_hex(err.into_bytes()),
+    }
+}
+
+fn bytes_to_hex(bytes: Vec<u8>) -> String {
+    if bytes.is_empty() {
+        return "<empty>".into();
+    }
+
+    let mut output = String::with_capacity(bytes.len() * 3 + 2);
+    output.push_str("0x");
+    for (idx, byte) in bytes.iter().enumerate() {
+        if idx > 0 {
+            output.push(' ');
+        }
+        let _ = write!(&mut output, "{:02X}", byte);
+    }
+    output
 }

@@ -1,4 +1,6 @@
-use crate::{EncodeError, parse_u8};
+use alloc::vec::Vec;
+
+use super::{parse_u8, EncodeError};
 
 pub fn encode_i2c_read(remainder: &str, output: &mut Vec<u8>) -> Result<usize, EncodeError> {
     const EXPECTED_ARGS: usize = 2;
