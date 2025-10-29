@@ -131,6 +131,7 @@ impl StateMachine {
                 SystemState::WaitForHandshake => self.step_handshake(class, byte).await?,
                 SystemState::WaitForMessage => {
                     if self.frame_buf.push(byte).is_err() {
+                        self.frame_buf.clear();
                         self.enter_error(Error::InvalidChecksum);
                     }
                 }
