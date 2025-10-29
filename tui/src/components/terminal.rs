@@ -342,7 +342,7 @@ impl Component for TerminalScreen {
             .direction(Direction::Vertical)
             .constraints(
                 [
-                    Constraint::Length(3),
+                    Constraint::Length(4),
                     Constraint::Length(3),
                     Constraint::Length(6),
                     Constraint::Min(10),
