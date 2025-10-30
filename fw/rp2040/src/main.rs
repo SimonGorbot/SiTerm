@@ -1,10 +1,16 @@
 #![no_std]
 #![no_main]
 
-use core::str;
+mod handlers;
+mod state;
+mod usb_transport;
 
+// Embassy provides the async runtime and executor setup for the RP2040.
 use embassy_executor::Spawner;
-use embassy_futures::join::join;
+use embassy_futures::{
+    join::join,
+    select::{select, Either},
+};
 use embassy_rp::bind_interrupts;
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Driver, InterruptHandler};
@@ -12,23 +18,21 @@ use embassy_time::Timer;
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
 use embassy_usb::driver::EndpointError;
 use embassy_usb::{Builder, Config};
-use heapless::Vec;
-use protocol::{
-    transport::{self, FrameError, PostcardError},
-    Command, HANDSHAKE_COMMAND, HANDSHAKE_DELIMITER, HANDSHAKE_RESPONSE, decode_command,
-};
+use state::StateMachine;
 use {defmt_rtt as _, panic_probe as _};
 
 bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => InterruptHandler<USB>;
 });
 
-const READ_BUFFER_SIZE: usize = 64;
-const HANDSHAKE_BUFFER_SIZE: usize = 64;
-const ECHO_PREFIX: &[u8] = b"rp2040: ";
-const FRAME_BUFFER_SIZE: usize = 512;
-const MAX_COMMAND_SIZE: usize = 256;
-const ENCODED_FRAME_BUFFER_SIZE: usize = 320;
+// Shared buffer sizes and protocol limits used by the transport/state machine modules.
+pub(crate) const READ_BUFFER_SIZE: usize = 64;
+pub(crate) const HANDSHAKE_BUFFER_SIZE: usize = 64;
+pub(crate) const ECHO_PREFIX: &[u8] = b"rp2040: ";
+pub(crate) const FRAME_BUFFER_SIZE: usize = 512;
+pub(crate) const MAX_COMMAND_SIZE: usize = 256;
+pub(crate) const ENCODED_FRAME_BUFFER_SIZE: usize = 320;
+pub(crate) const WRITE_RETRY_TIMEOUT_MS: u64 = 250;
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
@@ -63,242 +67,72 @@ async fn main(_spawner: Spawner) {
     let mut class = CdcAcmClass::new(&mut builder, &mut state, 64);
     let mut device = builder.build();
 
+    // USB device task runs independently from the serial state machine task.
     let usb_fut = device.run();
 
     let serial_fut = async {
-        let delimiter = HANDSHAKE_DELIMITER.as_bytes();
         let mut read_buf = [0u8; READ_BUFFER_SIZE];
+        let mut machine = StateMachine::new();
 
+        // Service connections forever; each iteration waits for a new host session.
         loop {
             class.wait_connection().await;
+            machine.reset();
 
-            let mut handshake_buffer: Vec<u8, HANDSHAKE_BUFFER_SIZE> = Vec::new();
-            let mut pending_frames: Vec<u8, FRAME_BUFFER_SIZE> = Vec::new();
-            let mut handshake_complete = false;
+            // Kick the state machine once so it can emit any immediate errors (e.g. timeout).
+            if let Err(err) = machine.consume(&mut class, &[]).await {
+                if matches!(err, EndpointError::Disabled) {
+                    continue;
+                }
+            }
 
             'connected: loop {
-                let len = match class.read_packet(&mut read_buf).await {
-                    Ok(len) => len,
-                    Err(EndpointError::Disabled) => break 'connected,
-                    Err(EndpointError::BufferOverflow) => continue,
-                };
-
-                if len == 0 {
-                    continue;
-                }
-
-                if handshake_complete {
-                    if let Err(err) =
-                        process_transport_bytes(&mut class, &mut pending_frames, &read_buf[..len])
-                            .await
-                    {
-                        if matches!(err, EndpointError::Disabled) {
-                            break 'connected;
-                        }
-                    }
-                    continue;
-                }
-
-                let mut idx = 0usize;
-                while idx < len {
-                    let byte = read_buf[idx];
-                    idx += 1;
-
-                    if handshake_buffer.push(byte).is_err() {
-                        handshake_buffer.clear();
-                    }
-
-                    let buffer = handshake_buffer.as_slice();
-
-                    let command_ready = if delimiter.is_empty() {
-                        buffer.len() >= HANDSHAKE_COMMAND.len()
-                    } else {
-                        buffer.len() >= delimiter.len()
-                            && &buffer[buffer.len() - delimiter.len()..] == delimiter
-                    };
-
-                    if command_ready {
-                        let command_len = if delimiter.is_empty() {
-                            buffer.len()
-                        } else {
-                            buffer.len() - delimiter.len()
-                        };
-                        let command_matches = str::from_utf8(&buffer[..command_len])
-                            .map(|cmd| cmd == HANDSHAKE_COMMAND)
-                            .unwrap_or(false);
-
-                        handshake_buffer.clear();
-
-                        if command_matches {
-                            if let Err(err) =
-                                write_packet_with_retry(&mut class, HANDSHAKE_RESPONSE.as_bytes())
-                                    .await
-                            {
+                // Drive handshake timeouts by racing USB reads against the deadline.
+                let len_result = if let Some(timeout) = machine.handshake_timeout_remaining() {
+                    match select(Timer::after(timeout), class.read_packet(&mut read_buf)).await {
+                        Either::First(_) => {
+                            if let Err(err) = machine.handle_handshake_timeout(&mut class).await {
                                 if matches!(err, EndpointError::Disabled) {
                                     break 'connected;
                                 }
-                            } else {
-                                handshake_complete = true;
-                                pending_frames.clear();
-
-                                if idx < len {
-                                    if let Err(err) = process_transport_bytes(
-                                        &mut class,
-                                        &mut pending_frames,
-                                        &read_buf[idx..len],
-                                    )
-                                    .await
-                                    {
-                                        if matches!(err, EndpointError::Disabled) {
-                                            break 'connected;
-                                        }
-                                    }
-                                }
                             }
-
-                            break;
+                            continue;
                         }
+                        Either::Second(result) => result,
+                    }
+                } else {
+                    class.read_packet(&mut read_buf).await
+                };
+
+                let len = match len_result {
+                    Ok(len) => len,
+                    Err(EndpointError::Disabled) => break 'connected,
+                    Err(EndpointError::BufferOverflow) => {
+                        // Surface overflows to the host rather than silently dropping bytes.
+                        if let Err(err) = machine.handle_buffer_overflow(&mut class).await {
+                            if matches!(err, EndpointError::Disabled) {
+                                break 'connected;
+                            }
+                        }
+                        continue;
+                    }
+                };
+
+                if len == 0 {
+                    // Zero-length packets keep the link alive but carry no data.
+                    continue;
+                }
+
+                // Feed new bytes into the state machine; bail out if the host disconnects.
+                if let Err(err) = machine.consume(&mut class, &read_buf[..len]).await {
+                    if matches!(err, EndpointError::Disabled) {
+                        break 'connected;
                     }
                 }
             }
         }
     };
 
+    // Execute both the USB driver task and the serial state machine together.
     join(usb_fut, serial_fut).await;
-}
-
-async fn write_packet_with_retry<'d, D>(
-    class: &mut CdcAcmClass<'d, D>,
-    data: &[u8],
-) -> Result<(), EndpointError>
-where
-    D: embassy_usb::driver::Driver<'d>,
-{
-    loop {
-        match class.write_packet(data).await {
-            Ok(()) => return Ok(()),
-            Err(EndpointError::BufferOverflow) => Timer::after_millis(10).await,
-            Err(err) => return Err(err),
-        }
-    }
-}
-
-async fn process_transport_bytes<'d, D>(
-    class: &mut CdcAcmClass<'d, D>,
-    pending_frames: &mut Vec<u8, FRAME_BUFFER_SIZE>,
-    data: &[u8],
-) -> Result<(), EndpointError>
-where
-    D: embassy_usb::driver::Driver<'d>,
-{
-    if pending_frames.extend_from_slice(data).is_err() {
-        pending_frames.clear();
-        return Ok(());
-    }
-
-    loop {
-        match transport::take_from_bytes(pending_frames.as_slice()) {
-            Ok((frame, remaining)) => {
-                let consumed = pending_frames.len() - remaining.len();
-                let mut command_buf: Vec<u8, MAX_COMMAND_SIZE> = Vec::new();
-
-                if command_buf.extend_from_slice(frame.payload).is_err() {
-                    drop_prefix(pending_frames, consumed);
-                    continue;
-                }
-
-                if let Ok(command) = decode_command(command_buf.as_slice()) {
-                    handle_command(class, command).await?;
-                }
-
-                drop_prefix(pending_frames, consumed);
-            }
-            Err(FrameError::Deserialize(err)) => {
-                if matches!(err, PostcardError::DeserializeUnexpectedEnd) {
-                    break;
-                } else {
-                    pending_frames.clear();
-                    break;
-                }
-            }
-            Err(FrameError::Serialize(_)) => {
-                pending_frames.clear();
-                break;
-            }
-        }
-    }
-
-    Ok(())
-}
-
-async fn handle_command<'d, D>(
-    class: &mut CdcAcmClass<'d, D>,
-    command: Command<'_>,
-) -> Result<(), EndpointError>
-where
-    D: embassy_usb::driver::Driver<'d>,
-{
-    match command {
-        Command::EchoWrite { payload } => send_echo_response(class, payload).await?,
-        _ => {}
-    }
-
-    Ok(())
-}
-
-async fn send_echo_response<'d, D>(
-    class: &mut CdcAcmClass<'d, D>,
-    payload: &[u8],
-) -> Result<(), EndpointError>
-where
-    D: embassy_usb::driver::Driver<'d>,
-{
-    let mut response: Vec<u8, MAX_COMMAND_SIZE> = Vec::new();
-    if response.extend_from_slice(ECHO_PREFIX).is_err() {
-        return Ok(());
-    }
-    if response.extend_from_slice(payload).is_err() {
-        return Ok(());
-    }
-
-    send_framed_payload(class, response.as_slice()).await
-}
-
-async fn send_framed_payload<'d, D>(
-    class: &mut CdcAcmClass<'d, D>,
-    payload: &[u8],
-) -> Result<(), EndpointError>
-where
-    D: embassy_usb::driver::Driver<'d>,
-{
-    let mut frame_buf = [0u8; ENCODED_FRAME_BUFFER_SIZE];
-    let len = match transport::encode_into(payload, &mut frame_buf) {
-        Ok(len) => len,
-        Err(_) => return Ok(()),
-    };
-
-    let mut offset = 0;
-    while offset < len {
-        let end = (offset + READ_BUFFER_SIZE).min(len);
-        write_packet_with_retry(class, &frame_buf[offset..end]).await?;
-        offset = end;
-    }
-
-    Ok(())
-}
-
-fn drop_prefix<const N: usize>(buffer: &mut Vec<u8, N>, count: usize) {
-    if count == 0 {
-        return;
-    }
-    if count >= buffer.len() {
-        buffer.clear();
-        return;
-    }
-
-    let len = buffer.len();
-    for idx in count..len {
-        buffer[idx - count] = buffer[idx];
-    }
-    buffer.truncate(len - count);
 }

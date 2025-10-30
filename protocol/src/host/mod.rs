@@ -2,8 +2,8 @@ use alloc::vec::Vec;
 use postcard::{self, Error as PostcardError};
 
 use crate::{
-    transport::{self, Frame as TransportFrame, FrameError},
     COMMAND_DICTIONARY, Method, Operation,
+    transport::{self, Frame as TransportFrame, FrameError},
 };
 
 pub mod i2c;
@@ -161,10 +161,16 @@ mod tests {
 
     #[test]
     fn encode_i2c_read_hex_args() {
-        let buf = encode_command("i2c read 0x80 0x11").unwrap();
+        let buf = encode_command("i2c read 0x80 0x11 0x04").unwrap();
         assert_eq!(
             buf,
-            vec![Method::I2c.as_byte(), Operation::Read.as_byte(), 0x80, 0x11,]
+            vec![
+                Method::I2c.as_byte(),
+                Operation::Read.as_byte(),
+                0x80,
+                0x11,
+                0x04
+            ]
         );
     }
 
@@ -173,6 +179,9 @@ mod tests {
         let mut buf = Vec::new();
         let err = encode_command_into("i2c read 0x80", &mut buf).unwrap_err();
         assert!(matches!(err, EncodeError::MissingArgument { index: 1 }));
+
+        let err = encode_command_into("i2c read 0x80 0x11", &mut buf).unwrap_err();
+        assert!(matches!(err, EncodeError::MissingArgument { index: 2 }));
     }
 
     #[test]
