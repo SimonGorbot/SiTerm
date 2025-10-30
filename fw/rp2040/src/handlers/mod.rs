@@ -18,6 +18,6 @@ pub fn execute_command(
             address,
             register,
             length,
-        } => i2c::execute(address, register, length, response_buf),
+        } => i2c::execute_read(address, register, length, response_buf),
     }
 }

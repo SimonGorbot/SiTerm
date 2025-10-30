@@ -14,6 +14,7 @@ use crate::handlers;
 use crate::usb_transport::{drop_prefix, send_framed_payload, write_packet_with_retry};
 use crate::{FRAME_BUFFER_SIZE, HANDSHAKE_BUFFER_SIZE, MAX_COMMAND_SIZE};
 
+/// High-level states cycled through while talking to the tui host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemState {
     Init,
@@ -25,6 +26,7 @@ pub enum SystemState {
     Error(Error),
 }
 
+/// Errors surfaced to the host when parsing or executing a command fails.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
     InvalidChecksum,
@@ -48,6 +50,7 @@ impl Error {
     }
 }
 
+/// Owned variants of protocol commands so handlers can borrow payloads without lifetime issues.
 pub enum CommandOwned {
     EchoWrite(Vec<u8, MAX_COMMAND_SIZE>),
     I2cRead {
@@ -58,6 +61,7 @@ pub enum CommandOwned {
 }
 
 impl CommandOwned {
+    /// Converts borrowed commands into owned versions for convenience.
     pub fn from_command(command: Command<'_>) -> Result<Self, Error> {
         match command {
             Command::EchoWrite { payload } => {
@@ -80,6 +84,7 @@ impl CommandOwned {
     }
 }
 
+/// Tracks buffers, timers, and state transitions for the USB CDC control loop.
 pub struct StateMachine {
     state: SystemState,
     handshake_buf: Vec<u8, HANDSHAKE_BUFFER_SIZE>,
@@ -92,6 +97,7 @@ pub struct StateMachine {
 }
 
 impl StateMachine {
+    /// Create a state machine with empty buffers and no pending handshake.
     pub const fn new() -> Self {
         Self {
             state: SystemState::Init,
@@ -105,6 +111,7 @@ impl StateMachine {
         }
     }
 
+    /// Return to the initial states, clearing buffers and resetting deadlines.
     pub fn reset(&mut self) {
         self.state = SystemState::Init;
         self.handshake_buf.clear();
@@ -116,6 +123,7 @@ impl StateMachine {
         self.schedule_handshake_deadline();
     }
 
+    /// Feed newly received bytes via USB into the FSM, progressing through handshake, parsing, and reply.
     pub async fn consume<'d, D>(
         &mut self,
         class: &mut CdcAcmClass<'d, D>,
@@ -144,6 +152,7 @@ impl StateMachine {
         self.advance(class).await
     }
 
+    /// Consume a single handshake byte, answering with the handshake response once the delimiter matches.
     async fn step_handshake<'d, D>(
         &mut self,
         class: &mut CdcAcmClass<'d, D>,
@@ -160,22 +169,13 @@ impl StateMachine {
         let delimiter = HANDSHAKE_DELIMITER.as_bytes();
         let buffer = self.handshake_buf.as_slice();
 
-        let command_ready = if delimiter.is_empty() {
-            buffer.len() >= HANDSHAKE_COMMAND.len()
-        } else {
-            buffer.len() >= delimiter.len()
-                && &buffer[buffer.len() - delimiter.len()..] == delimiter
-        };
-
-        if !command_ready {
+        // Collects bytes until delimiter arrives.
+        if buffer.len() < delimiter.len() || &buffer[buffer.len() - delimiter.len()..] != delimiter
+        {
             return Ok(());
         }
 
-        let command_len = if delimiter.is_empty() {
-            buffer.len()
-        } else {
-            buffer.len() - delimiter.len()
-        };
+        let command_len = buffer.len() - delimiter.len();
         let command_matches = str::from_utf8(&buffer[..command_len])
             .map(|cmd| cmd == HANDSHAKE_COMMAND)
             .unwrap_or(false);
@@ -193,6 +193,7 @@ impl StateMachine {
         Ok(())
     }
 
+    /// Drive the FSM forward until it needs more input or I/O completes, performing work for each state.
     async fn advance<'d, D>(&mut self, class: &mut CdcAcmClass<'d, D>) -> Result<(), EndpointError>
     where
         D: embassy_usb::driver::Driver<'d>,
@@ -248,22 +249,26 @@ impl StateMachine {
         }
     }
 
+    /// Try to take one complete transport frame out of `frame_buf`.
+    /// Returns `Ok(Some(()))` when a frame was removed and its payload copied into `command_buf`,
+    /// `Ok(None)` when more bytes are required, and `Err(Error::InvalidChecksum)` when the buffered
+    /// data is malformed (the frame buffer is cleared).
     fn take_ready_frame(&mut self) -> Result<Option<()>, Error> {
         match transport::take_from_bytes(self.frame_buf.as_slice()) {
             Ok((frame, remaining)) => {
-                let consumed = self.frame_buf.len() - remaining.len();
+                let consumed = self.frame_buf.len() - remaining.len(); // Bytes that belong to this frame.
                 self.command_buf.clear();
                 if self.command_buf.extend_from_slice(frame.payload).is_err() {
                     self.frame_buf.clear();
-                    return Err(Error::InvalidChecksum);
+                    return Err(Error::InvalidChecksum); // Payload is too large for the command buffer therefore surface error.
                 }
 
-                drop_prefix(&mut self.frame_buf, consumed);
+                drop_prefix(&mut self.frame_buf, consumed); // Leave any trailing bytes for the next frame.
                 Ok(Some(()))
             }
             Err(FrameError::Deserialize(err)) => {
                 if matches!(err, PostcardError::DeserializeUnexpectedEnd) {
-                    Ok(None)
+                    Ok(None) // Frame is incomplete, wait for more bytes to arrive.
                 } else {
                     self.frame_buf.clear();
                     Err(Error::InvalidChecksum)
@@ -276,6 +281,7 @@ impl StateMachine {
         }
     }
 
+    /// Deserialize the buffered frame payload into a pending command the executor can own.
     fn decode_pending_command(&mut self) -> Result<(), Error> {
         match decode_command(self.command_buf.as_slice()) {
             Ok(command) => {
@@ -288,6 +294,7 @@ impl StateMachine {
         }
     }
 
+    /// Execute the pending command via the handler table and capture any response bytes.
     fn perform_command(&mut self) -> Result<(), Error> {
         if let Some(command) = self.pending_command.take() {
             self.response_buf.clear();
@@ -309,6 +316,7 @@ impl StateMachine {
         Ok(())
     }
 
+    /// Frame and transmit the buffered response payload to the tui host.
     async fn flush_error<'d, D>(
         &mut self,
         class: &mut CdcAcmClass<'d, D>,
@@ -325,12 +333,15 @@ impl StateMachine {
         Ok(())
     }
 
+    /// Emit a framed `ERR: <name>` payload describing the provided error.
     fn enter_error(&mut self, err: Error) {
         self.pending_command = None;
         self.command_buf.clear();
         self.state = SystemState::Error(err);
     }
 
+    // TODO: More comprehensive error surfacing.
+    /// Map protocol-layer decoding failures onto user-visible error categories.
     fn map_protocol_error(err: protocol::ProtocolError) -> Error {
         match err {
             protocol::ProtocolError::Empty => Error::InvalidChecksum,
@@ -341,13 +352,11 @@ impl StateMachine {
         }
     }
 
-    fn handshake_timeout_duration() -> Duration {
-        let millis = HANDSHAKE_TIMEOUT.as_millis() as u64;
-        Duration::from_millis(millis)
-    }
-
+    /// Sets the deadline for the handshake with tui host.
     fn schedule_handshake_deadline(&mut self) {
-        self.handshake_deadline = Some(Instant::now() + Self::handshake_timeout_duration());
+        let secs = HANDSHAKE_TIMEOUT.as_secs() as u64; // Need to convert from core::time::Duration to embassy_time::duration :/
+        let hs_timeout = Duration::from_secs(secs);
+        self.handshake_deadline = Some(Instant::now() + hs_timeout);
     }
 
     pub fn handshake_timeout_remaining(&self) -> Option<Duration> {
@@ -369,6 +378,7 @@ impl StateMachine {
         }
     }
 
+    /// Recover from a handshake timeout by clearing buffers and surfacing a timeout error frame.
     pub async fn handle_handshake_timeout<'d, D>(
         &mut self,
         class: &mut CdcAcmClass<'d, D>,
@@ -384,6 +394,7 @@ impl StateMachine {
         self.advance(class).await
     }
 
+    /// Recover from a USB buffer overflow by dropping partial frames and flagging an invalid checksum.
     pub async fn handle_buffer_overflow<'d, D>(
         &mut self,
         class: &mut CdcAcmClass<'d, D>,

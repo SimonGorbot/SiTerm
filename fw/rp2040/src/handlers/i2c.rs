@@ -4,7 +4,7 @@ use crate::state::Error;
 use crate::MAX_COMMAND_SIZE;
 
 #[allow(unused_variables)]
-pub fn execute(
+pub fn execute_read(
     address: u8,
     register: u8,
     length: u8,
