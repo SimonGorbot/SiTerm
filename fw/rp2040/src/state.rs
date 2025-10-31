@@ -11,6 +11,11 @@ use protocol::{
 };
 
 use crate::handlers;
+use crate::status_led::{
+    self, StatusColours, StatusPattern, COMMUNICATION_PULSE_PERIOD, DEFAULT_BLINK_PERIOD,
+    ERROR_BLINK_PERIOD, ERROR_HOLD_DURATION, HANDSHAKE_BLINK_PERIOD, SUCCESS_BLINK_PERIOD,
+    SUCCESS_HOLD_DURATION, WARNING_HOLD_DURATION,
+};
 use crate::usb_transport::{drop_prefix, send_framed_payload, write_packet_with_retry};
 use crate::{FRAME_BUFFER_SIZE, HANDSHAKE_BUFFER_SIZE, MAX_COMMAND_SIZE};
 
@@ -94,6 +99,14 @@ pub struct StateMachine {
     pending_command: Option<CommandOwned>,
     handshake_deadline: Option<Instant>,
     handshake_complete: bool,
+    last_status_pattern: Option<StatusPattern>,
+    latched_pattern: Option<LatchedPattern>,
+}
+
+#[derive(Clone, Copy)]
+struct LatchedPattern {
+    pattern: StatusPattern,
+    until: Instant,
 }
 
 impl StateMachine {
@@ -108,19 +121,112 @@ impl StateMachine {
             pending_command: None,
             handshake_deadline: None,
             handshake_complete: false,
+            last_status_pattern: None,
+            latched_pattern: None,
         }
     }
 
     /// Return to the initial states, clearing buffers and resetting deadlines.
     pub fn reset(&mut self) {
-        self.state = SystemState::Init;
         self.handshake_buf.clear();
         self.frame_buf.clear();
         self.command_buf.clear();
         self.response_buf.clear();
         self.pending_command = None;
         self.handshake_complete = false;
+        self.last_status_pattern = None;
+        self.latched_pattern = None;
+        self.handshake_deadline = None;
         self.schedule_handshake_deadline();
+        self.set_state(SystemState::Init);
+    }
+
+    fn set_state(&mut self, state: SystemState) {
+        self.state = state;
+        self.refresh_status_led();
+    }
+
+    pub fn tick(&mut self) {
+        self.refresh_status_led();
+    }
+
+    fn refresh_status_led(&mut self) {
+        let now = Instant::now();
+
+        if let Some(latch) = self.latched_pattern {
+            if now >= latch.until {
+                self.latched_pattern = None;
+            }
+        }
+
+        let (pattern, hold) = self.state_pattern();
+
+        if let Some(duration) = hold {
+            self.latched_pattern = Some(LatchedPattern {
+                pattern,
+                until: now + duration,
+            });
+        }
+
+        let effective = if let Some(latch) = self.latched_pattern {
+            if now < latch.until {
+                latch.pattern
+            } else {
+                self.latched_pattern = None;
+                pattern
+            }
+        } else {
+            pattern
+        };
+
+        if self.last_status_pattern != Some(effective) {
+            status_led::signal(effective);
+            self.last_status_pattern = Some(effective);
+        }
+    }
+
+    fn state_pattern(&self) -> (StatusPattern, Option<Duration>) {
+        match self.state {
+            SystemState::Init => (StatusPattern::Solid(StatusColours::Idle), None),
+            SystemState::WaitForHandshake => (
+                StatusPattern::Blink {
+                    colour: StatusColours::Warning,
+                    period: HANDSHAKE_BLINK_PERIOD,
+                },
+                None,
+            ),
+            SystemState::WaitForMessage => (StatusPattern::Solid(StatusColours::Idle), None),
+            SystemState::ParseCommand | SystemState::ExecuteAction => (
+                StatusPattern::Pulse {
+                    colour: StatusColours::Communicating,
+                    period: COMMUNICATION_PULSE_PERIOD,
+                },
+                None,
+            ),
+            SystemState::SendResponse => (
+                StatusPattern::Blink {
+                    colour: StatusColours::Success,
+                    period: SUCCESS_BLINK_PERIOD,
+                },
+                Some(SUCCESS_HOLD_DURATION),
+            ),
+            SystemState::Error(err) => match err {
+                Error::Timeout => (
+                    StatusPattern::Blink {
+                        colour: StatusColours::Warning,
+                        period: DEFAULT_BLINK_PERIOD,
+                    },
+                    Some(WARNING_HOLD_DURATION),
+                ),
+                _ => (
+                    StatusPattern::Blink {
+                        colour: StatusColours::Error,
+                        period: ERROR_BLINK_PERIOD,
+                    },
+                    Some(ERROR_HOLD_DURATION),
+                ),
+            },
+        }
     }
 
     /// Feed newly received bytes via USB into the FSM, progressing through handshake, parsing, and reply.
@@ -187,7 +293,7 @@ impl StateMachine {
             self.frame_buf.clear();
             self.handshake_complete = true;
             self.handshake_deadline = None;
-            self.state = SystemState::WaitForMessage;
+            self.set_state(SystemState::WaitForMessage);
         }
 
         Ok(())
@@ -199,17 +305,18 @@ impl StateMachine {
         D: embassy_usb::driver::Driver<'d>,
     {
         loop {
+            self.refresh_status_led();
             match self.state {
                 SystemState::Init => {
                     if self.handshake_deadline.is_none() {
                         self.schedule_handshake_deadline();
                     }
-                    self.state = SystemState::WaitForHandshake;
+                    self.set_state(SystemState::WaitForHandshake);
                 }
                 SystemState::WaitForHandshake => return Ok(()),
                 SystemState::WaitForMessage => match self.take_ready_frame() {
                     Ok(Some(())) => {
-                        self.state = SystemState::ParseCommand;
+                        self.set_state(SystemState::ParseCommand);
                     }
                     Ok(None) => return Ok(()),
                     Err(err) => {
@@ -218,7 +325,7 @@ impl StateMachine {
                 },
                 SystemState::ParseCommand => match self.decode_pending_command() {
                     Ok(()) => {
-                        self.state = SystemState::ExecuteAction;
+                        self.set_state(SystemState::ExecuteAction);
                     }
                     Err(err) => {
                         self.enter_error(err);
@@ -226,7 +333,7 @@ impl StateMachine {
                 },
                 SystemState::ExecuteAction => match self.perform_command() {
                     Ok(()) => {
-                        self.state = SystemState::SendResponse;
+                        self.set_state(SystemState::SendResponse);
                     }
                     Err(err) => {
                         self.enter_error(err);
@@ -234,15 +341,15 @@ impl StateMachine {
                 },
                 SystemState::SendResponse => {
                     self.flush_response(class).await?;
-                    self.state = SystemState::WaitForMessage;
+                    self.set_state(SystemState::WaitForMessage);
                 }
                 SystemState::Error(err) => {
                     self.flush_error(class, err).await?;
                     if self.handshake_complete {
-                        self.state = SystemState::WaitForMessage;
+                        self.set_state(SystemState::WaitForMessage);
                     } else {
                         self.schedule_handshake_deadline();
-                        self.state = SystemState::WaitForHandshake;
+                        self.set_state(SystemState::WaitForHandshake);
                     }
                 }
             }
@@ -337,7 +444,7 @@ impl StateMachine {
     fn enter_error(&mut self, err: Error) {
         self.pending_command = None;
         self.command_buf.clear();
-        self.state = SystemState::Error(err);
+        self.set_state(SystemState::Error(err));
     }
 
     // TODO: More comprehensive error surfacing.
