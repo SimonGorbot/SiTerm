@@ -1060,7 +1060,7 @@ dependencies = [
  "rp-pac",
  "rp2040-boot2",
  "sha2-const-stable",
- "smart-leds",
+ "smart-leds 0.4.0",
 ]
 
 [[package]]
@@ -3552,6 +3552,9 @@ name = "rgb"
 version = "0.8.52"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c6a884d2998352bb4daf0183589aec883f16a6da1f4dde84d8e2e9a5409a1ce"
+dependencies = [
+ "bytemuck",
+]
 
 [[package]]
 name = "ron"
@@ -3606,6 +3609,7 @@ dependencies = [
  "portable-atomic",
  "protocol",
  "rand",
+ "smart-leds 0.3.0",
  "static_cell",
  "usbd-hid",
 ]
@@ -3920,11 +3924,29 @@ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 
 [[package]]
 name = "smart-leds"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38dd45fa275f70b4110eac5f5182611ad384f88bb22b68b9a9c3cafd7015290b"
+dependencies = [
+ "smart-leds-trait 0.2.1",
+]
+
+[[package]]
+name = "smart-leds"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "66df34e571fa9993fa6f99131a374d58ca3d694b75f9baac93458fe0d6057bf0"
 dependencies = [
- "smart-leds-trait",
+ "smart-leds-trait 0.3.2",
+]
+
+[[package]]
+name = "smart-leds-trait"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ebf6d833fa93f16a1c1874e62c2aebe8567e5bdd436d59bf543ed258b6f7a8e3"
+dependencies = [
+ "rgb",
 ]
 
 [[package]]
