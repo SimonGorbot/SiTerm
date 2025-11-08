@@ -3,26 +3,31 @@
 
 mod handlers;
 mod state;
+mod status_led;
 mod usb_transport;
 
 // Embassy provides the async runtime and executor setup for the RP2040.
 use embassy_executor::Spawner;
 use embassy_futures::{
-    join::join,
+    join::join3,
     select::{select, Either},
 };
 use embassy_rp::bind_interrupts;
-use embassy_rp::peripherals::USB;
+use embassy_rp::peripherals::{PIO0, USB};
+use embassy_rp::pio::{InterruptHandler as PioInterruptHandler, Pio};
+use embassy_rp::pio_programs::ws2812::{PioWs2812, PioWs2812Program};
 use embassy_rp::usb::{Driver, InterruptHandler};
-use embassy_time::Timer;
+use embassy_time::{Duration, Timer};
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
 use embassy_usb::driver::EndpointError;
 use embassy_usb::{Builder, Config};
 use state::StateMachine;
+use status_led::{StatusColours, StatusLed, StatusPattern, DEFAULT_NUM_LEDS};
 use {defmt_rtt as _, panic_probe as _};
 
 bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => InterruptHandler<USB>;
+    PIO0_IRQ_0 => PioInterruptHandler<PIO0>;
 });
 
 // Shared buffer sizes and protocol limits used by the transport/state machine modules.
@@ -33,10 +38,22 @@ pub(crate) const FRAME_BUFFER_SIZE: usize = 512;
 pub(crate) const MAX_COMMAND_SIZE: usize = 256;
 pub(crate) const ENCODED_FRAME_BUFFER_SIZE: usize = 320;
 pub(crate) const WRITE_RETRY_TIMEOUT_MS: u64 = 250;
+pub(crate) const STATUS_LED_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
+
+    let mut pio = Pio::new(p.PIO0, Irqs);
+    let program = PioWs2812Program::new(&mut pio.common);
+    let status_led = StatusLed::new(PioWs2812::<PIO0, 0, DEFAULT_NUM_LEDS>::new(
+        &mut pio.common,
+        pio.sm0,
+        p.DMA_CH0,
+        p.PIN_16,
+        &program,
+    ));
+    status_led::signal(StatusPattern::Solid(StatusColours::Idle));
 
     // USB CDC needs the USB peripheral and its interrupt handler.
     let driver = Driver::new(p.USB, Irqs);
@@ -87,21 +104,33 @@ async fn main(_spawner: Spawner) {
             }
 
             'connected: loop {
-                // Drive handshake timeouts by racing USB reads against the deadline.
-                let len_result = if let Some(timeout) = machine.handshake_timeout_remaining() {
-                    match select(Timer::after(timeout), class.read_packet(&mut read_buf)).await {
-                        Either::First(_) => {
-                            if let Err(err) = machine.handle_handshake_timeout(&mut class).await {
-                                if matches!(err, EndpointError::Disabled) {
-                                    break 'connected;
+                machine.tick();
+
+                let mut wait = STATUS_LED_POLL_INTERVAL;
+                if let Some(timeout) = machine.handshake_timeout_remaining() {
+                    wait = timeout.min(wait);
+                }
+
+                let wait = nonzero_duration(wait);
+
+                // Drive handshake timeouts and LED latch expiry by racing USB reads against a timer tick.
+                let len_result = match select(Timer::after(wait), class.read_packet(&mut read_buf))
+                    .await
+                {
+                    Either::First(_) => {
+                        if let Some(timeout) = machine.handshake_timeout_remaining() {
+                            if timeout.as_ticks() == 0 {
+                                if let Err(err) = machine.handle_handshake_timeout(&mut class).await
+                                {
+                                    if matches!(err, EndpointError::Disabled) {
+                                        break 'connected;
+                                    }
                                 }
                             }
-                            continue;
                         }
-                        Either::Second(result) => result,
+                        continue;
                     }
-                } else {
-                    class.read_packet(&mut read_buf).await
+                    Either::Second(result) => result,
                 };
 
                 let len = match len_result {
@@ -133,6 +162,16 @@ async fn main(_spawner: Spawner) {
         }
     };
 
-    // Execute both the USB driver task and the serial state machine together.
-    join(usb_fut, serial_fut).await;
+    let led_fut = status_led::drive(status_led);
+
+    // Execute the USB driver task, serial state machine, and LED driver together.
+    let _ = join3(usb_fut, serial_fut, led_fut).await;
+}
+
+fn nonzero_duration(duration: Duration) -> Duration {
+    if duration.as_ticks() == 0 {
+        Duration::from_micros(1)
+    } else {
+        duration
+    }
 }

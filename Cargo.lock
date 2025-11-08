@@ -3606,6 +3606,7 @@ dependencies = [
  "portable-atomic",
  "protocol",
  "rand",
+ "smart-leds",
  "static_cell",
  "usbd-hid",
 ]
