@@ -30,7 +30,7 @@ embassy-futures = "0.1.1"
 embassy-usb = { version = "0.4.0", features = ["defmt"] }
 embassy-usb-logger = "0.4.0"
 usbd-hid = "0.8.2"
-smart-leds = "0.3"
+smart-leds = "0.4"
 
 defmt = "1.0"
 defmt-rtt = "1.0"
