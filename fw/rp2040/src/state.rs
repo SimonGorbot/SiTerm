@@ -333,7 +333,7 @@ impl StateMachine {
                         self.enter_error(err);
                     }
                 },
-                SystemState::ExecuteAction => match self.perform_command() {
+                SystemState::ExecuteAction => match self.perform_command().await {
                     Ok(()) => {
                         self.set_state(SystemState::SendResponse);
                     }
@@ -404,7 +404,7 @@ impl StateMachine {
     }
 
     /// Execute the pending command via the handler table and capture any response bytes.
-    fn perform_command(&mut self) -> Result<(), Error> {
+    async fn perform_command(&mut self) -> Result<(), Error> {
         if let Some(command) = self.pending_command.take() {
             self.response_buf.clear();
             handlers::execute_command(
@@ -412,6 +412,7 @@ impl StateMachine {
                 &mut self.response_buf,
                 &mut self.handler_peripherals,
             )
+            .await
         } else {
             Ok(())
         }
@@ -438,9 +439,19 @@ impl StateMachine {
     where
         D: embassy_usb::driver::Driver<'d>,
     {
+        let mut errored_buffer = Vec::<u8, MAX_COMMAND_SIZE>::new();
+        let _ = errored_buffer.extend_from_slice(self.response_buf.as_slice());
         self.response_buf.clear();
+
         let _ = self.response_buf.extend_from_slice(b"ERR: ");
         let _ = self.response_buf.extend_from_slice(err.as_bytes());
+        if !errored_buffer.is_empty() {
+            let _ = self.response_buf.extend_from_slice(b": ");
+            let _ = self
+                .response_buf
+                .extend_from_slice(errored_buffer.as_slice());
+        }
+
         send_framed_payload(class, self.response_buf.as_slice()).await?;
         self.response_buf.clear();
         Ok(())

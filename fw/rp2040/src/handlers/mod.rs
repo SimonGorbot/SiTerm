@@ -4,7 +4,6 @@ pub mod spi;
 pub mod uart;
 
 use embassy_rp::i2c::Async;
-use embassy_rp::interrupt::typelevel::Handler;
 use embassy_rp::peripherals::I2C1;
 use heapless::Vec;
 
@@ -17,7 +16,7 @@ pub struct HandlerPeripherals {
     // spi: Spi,
 }
 
-pub fn execute_command(
+pub async fn execute_command(
     command: CommandOwned,
     response_buf: &mut Vec<u8, MAX_COMMAND_SIZE>,
     peripherals: &mut HandlerPeripherals,
@@ -28,12 +27,15 @@ pub fn execute_command(
             address,
             register,
             length,
-        } => i2c::execute_read(
-            address,
-            register,
-            length,
-            response_buf,
-            &mut peripherals.i2c,
-        ),
+        } => {
+            i2c::execute_read(
+                address,
+                register,
+                length,
+                response_buf,
+                &mut peripherals.i2c,
+            )
+            .await
+        }
     }
 }

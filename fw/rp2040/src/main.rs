@@ -6,7 +6,6 @@ mod state;
 mod status_led;
 mod usb_transport;
 
-use embassy_embedded_hal::shared_bus::asynch::i2c;
 // Embassy provides the async runtime and executor setup for the RP2040.
 use embassy_executor::Spawner;
 use embassy_futures::{
@@ -53,7 +52,7 @@ async fn main(_spawner: Spawner) {
     // I2C pin setup.
     let scl = p.PIN_15;
     let sda = p.PIN_14;
-    let mut i2c_bus = I2c::new_async(p.I2C1, scl, sda, Irqs, I2cConfig::default());
+    let i2c_bus = I2c::new_async(p.I2C1, scl, sda, Irqs, I2cConfig::default());
 
     let peris = handlers::HandlerPeripherals { i2c: i2c_bus };
 
