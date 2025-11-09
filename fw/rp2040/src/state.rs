@@ -10,7 +10,7 @@ use protocol::{
     Command, HANDSHAKE_COMMAND, HANDSHAKE_DELIMITER, HANDSHAKE_RESPONSE, HANDSHAKE_TIMEOUT,
 };
 
-use crate::handlers;
+use crate::handlers::{self, HandlerPeripherals};
 use crate::status_led::{
     self, StatusColours, StatusPattern, COMMUNICATION_PULSE_PERIOD, DEFAULT_BLINK_PERIOD,
     ERROR_BLINK_PERIOD, ERROR_HOLD_DURATION, HANDSHAKE_BLINK_PERIOD, SUCCESS_BLINK_PERIOD,
@@ -101,6 +101,7 @@ pub struct StateMachine {
     handshake_complete: bool,
     last_status_pattern: Option<StatusPattern>,
     latched_pattern: Option<LatchedPattern>,
+    handler_peripherals: HandlerPeripherals,
 }
 
 #[derive(Clone, Copy)]
@@ -111,7 +112,7 @@ struct LatchedPattern {
 
 impl StateMachine {
     /// Create a state machine with empty buffers and no pending handshake.
-    pub const fn new() -> Self {
+    pub const fn new(handler_peripherals: HandlerPeripherals) -> Self {
         Self {
             state: SystemState::Init,
             handshake_buf: Vec::new(),
@@ -123,6 +124,7 @@ impl StateMachine {
             handshake_complete: false,
             last_status_pattern: None,
             latched_pattern: None,
+            handler_peripherals,
         }
     }
 
@@ -405,7 +407,11 @@ impl StateMachine {
     fn perform_command(&mut self) -> Result<(), Error> {
         if let Some(command) = self.pending_command.take() {
             self.response_buf.clear();
-            handlers::execute_command(command, &mut self.response_buf)
+            handlers::execute_command(
+                command,
+                &mut self.response_buf,
+                &mut self.handler_peripherals,
+            )
         } else {
             Ok(())
         }
