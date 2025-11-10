@@ -137,6 +137,9 @@ impl Component for PreconnectScreen {
             (KeyCode::Char('q'), KeyModifiers::NONE) => {
                 self.send(Action::Quit)?;
             }
+            (KeyCode::Char('h'), KeyModifiers::NONE) => {
+                return Ok(Some(Action::ToggleHelp));
+            }
             (KeyCode::Char('r'), KeyModifiers::NONE) => {
                 self.status_message = Some("Refreshing ports...".into());
                 self.send(Action::RefreshPorts)?;

@@ -23,4 +23,5 @@ pub enum Action {
     SendCommand(String),
     CommandSent(String),
     IncomingMessage(String),
+    ToggleHelp,
 }

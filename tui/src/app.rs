@@ -1,6 +1,12 @@
 use color_eyre::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::prelude::Rect;
+use ratatui::{
+    layout::{Alignment, Constraint, Direction, Layout},
+    prelude::Rect,
+    style::{Color, Modifier, Style, Stylize},
+    text::{Line, Span},
+    widgets::{Block, Borders, Clear, Paragraph},
+};
 use serde::{Deserialize, Serialize};
 use std::{fmt::Write, str};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
@@ -40,6 +46,12 @@ impl Default for Mode {
     }
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum HelpContext {
+    Preconnect,
+    Connected,
+}
+
 pub struct App {
     tick_rate: f64,
     frame_rate: f64,
@@ -47,6 +59,7 @@ pub struct App {
     should_quit: bool,
     should_suspend: bool,
     mode: Mode,
+    help_overlay: Option<HelpContext>,
     action_tx: mpsc::UnboundedSender<Action>,
     action_rx: mpsc::UnboundedReceiver<Action>,
     serial_tx: Option<mpsc::UnboundedSender<String>>,
@@ -67,6 +80,7 @@ impl App {
             should_quit: false,
             should_suspend: false,
             mode: Mode::Preconnect,
+            help_overlay: None,
             action_tx,
             action_rx,
             serial_tx: None,
@@ -126,13 +140,19 @@ impl App {
 
     fn handle_event(&mut self, event: Event) -> Result<()> {
         let action_tx = self.action_tx.clone();
-        match event {
+        let mut event_consumed = false;
+        match &event {
             Event::Quit => action_tx.send(Action::Quit)?,
             Event::Tick => action_tx.send(Action::Tick)?,
             Event::Render => action_tx.send(Action::Render)?,
-            Event::Resize(x, y) => action_tx.send(Action::Resize(x, y))?,
-            Event::Key(key) => self.handle_key_event(key)?,
+            Event::Resize(x, y) => action_tx.send(Action::Resize(*x, *y))?,
+            Event::Key(key) => {
+                event_consumed = self.handle_key_event(key.clone())?;
+            }
             _ => {}
+        }
+        if event_consumed {
+            return Ok(());
         }
         for component in self.components.iter_mut() {
             if let Some(action) = component.handle_events(Some(event.clone()))? {
@@ -142,12 +162,19 @@ impl App {
         Ok(())
     }
 
-    fn handle_key_event(&mut self, key: KeyEvent) -> Result<()> {
+    fn handle_key_event(&mut self, key: KeyEvent) -> Result<bool> {
+        if self.help_overlay.is_some() && key.code == KeyCode::Esc {
+            self.help_overlay = None;
+            self.action_tx.send(Action::Render)?;
+            return Ok(true);
+        }
+
         let action_tx = self.action_tx.clone();
         if Self::is_ctrl_key(&key, 'c') || Self::is_ctrl_key(&key, 'd') {
             action_tx.send(Action::Quit)?;
+            return Ok(true);
         }
-        Ok(())
+        Ok(false)
     }
 
     fn handle_action(&mut self, tui: &mut Tui, action: Action) -> Result<()> {
@@ -166,18 +193,22 @@ impl App {
             Action::ShowPreconnect => {
                 self.mode = Mode::Preconnect;
                 self.serial_tx = None;
+                self.help_overlay = None;
                 self.action_tx.send(Action::Render)?;
             }
             Action::ShowConnecting => {
                 self.mode = Mode::Connecting;
+                self.help_overlay = None;
                 self.action_tx.send(Action::Render)?;
             }
             Action::ShowMain => {
                 self.mode = Mode::Main;
+                self.help_overlay = None;
                 self.action_tx.send(Action::Render)?;
             }
             Action::ShowError(_) => {
                 self.mode = Mode::Error;
+                self.help_overlay = None;
                 self.action_tx.send(Action::Render)?;
             }
             Action::RefreshPorts => {
@@ -223,6 +254,16 @@ impl App {
             Action::CommandSent(_) => {}
             Action::IncomingMessage(_) => {}
             Action::Error(_) => {}
+            Action::ToggleHelp => {
+                if let Some(context) = self.help_context_for_mode() {
+                    if self.help_overlay == Some(context) {
+                        self.help_overlay = None;
+                    } else {
+                        self.help_overlay = Some(context);
+                    }
+                    self.action_tx.send(Action::Render)?;
+                }
+            }
         }
         for component in self.components.iter_mut() {
             if let Some(next_action) = component.update(action.clone())? {
@@ -246,6 +287,7 @@ impl App {
     }
 
     fn render(&mut self, tui: &mut Tui) -> Result<()> {
+        let help_overlay = self.help_overlay;
         tui.draw(|frame| {
             for component in self.components.iter_mut() {
                 if let Err(err) = component.draw(frame, frame.area()) {
@@ -254,8 +296,29 @@ impl App {
                         .send(Action::Error(format!("Failed to draw: {:?}", err)));
                 }
             }
+
+            if let Some(context) = help_overlay {
+                let popup_area = centered_rect(80, 60, frame.area());
+                frame.render_widget(Clear, popup_area);
+                let popup = Paragraph::new(context.body())
+                    .alignment(Alignment::Center)
+                    .block(
+                        Block::default()
+                            .title(context.title())
+                            .borders(Borders::ALL),
+                    );
+                frame.render_widget(popup, popup_area);
+            }
         })?;
         Ok(())
+    }
+
+    fn help_context_for_mode(&self) -> Option<HelpContext> {
+        match self.mode {
+            Mode::Preconnect => Some(HelpContext::Preconnect),
+            Mode::Main => Some(HelpContext::Connected),
+            _ => None,
+        }
     }
 
     fn is_ctrl_key(key: &KeyEvent, chr: char) -> bool {
@@ -264,6 +327,58 @@ impl App {
             (KeyCode::Char(c), KeyModifiers::CONTROL) if c == chr
         )
     }
+}
+
+impl HelpContext {
+    fn title(self) -> &'static str {
+        match self {
+            HelpContext::Preconnect => "Preconnect Help",
+            HelpContext::Connected => "Connected Help",
+        }
+    }
+
+    fn body(self) -> Vec<Line<'static>> {
+        match self {
+            HelpContext::Preconnect => vec![
+                Line::from("Hello World!").add_modifier(Modifier::BOLD),
+                Line::from("This is the preconnect help overlay."),
+            ],
+            HelpContext::Connected => vec![
+                Line::from("Hello World!")
+                    .add_modifier(Modifier::BOLD)
+                    .fg(Color::Cyan),
+                Line::from(vec![
+                    Span::styled("This is mixed", Style::default().fg(Color::Green)),
+                    Span::styled(
+                        "styling",
+                        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::from("!"),
+                ]),
+                Line::from("This is the connected help overlay."),
+            ],
+        }
+    }
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(area);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(vertical[1])[1]
 }
 
 impl App {
