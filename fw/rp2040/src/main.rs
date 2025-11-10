@@ -13,21 +13,26 @@ use embassy_futures::{
     select::{select, Either},
 };
 use embassy_rp::bind_interrupts;
-use embassy_rp::peripherals::{PIO0, USB};
+use embassy_rp::i2c::{Config as I2cConfig, I2c, InterruptHandler as I2cInterruptHandler};
+use embassy_rp::peripherals::{I2C1, PIO0, USB};
 use embassy_rp::pio::{InterruptHandler as PioInterruptHandler, Pio};
 use embassy_rp::pio_programs::ws2812::{PioWs2812, PioWs2812Program};
-use embassy_rp::usb::{Driver, InterruptHandler};
+use embassy_rp::usb::{Driver, InterruptHandler as UsbInterruptHandler};
+
 use embassy_time::{Duration, Timer};
+
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
 use embassy_usb::driver::EndpointError;
-use embassy_usb::{Builder, Config};
+use embassy_usb::{Builder, Config as UsbConfig};
+
 use state::StateMachine;
 use status_led::{StatusColours, StatusLed, StatusPattern, DEFAULT_NUM_LEDS};
 use {defmt_rtt as _, panic_probe as _};
 
 bind_interrupts!(struct Irqs {
-    USBCTRL_IRQ => InterruptHandler<USB>;
+    USBCTRL_IRQ => UsbInterruptHandler<USB>;
     PIO0_IRQ_0 => PioInterruptHandler<PIO0>;
+    I2C1_IRQ => I2cInterruptHandler<I2C1>;
 });
 
 // Shared buffer sizes and protocol limits used by the transport/state machine modules.
@@ -44,6 +49,14 @@ pub(crate) const STATUS_LED_POLL_INTERVAL: Duration = Duration::from_millis(100)
 async fn main(_spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
 
+    // I2C pin setup.
+    let scl = p.PIN_15;
+    let sda = p.PIN_14;
+    let i2c_bus = I2c::new_async(p.I2C1, scl, sda, Irqs, I2cConfig::default());
+
+    let peris = handlers::HandlerPeripherals { i2c: i2c_bus };
+
+    // Status led pin setup.
     let mut pio = Pio::new(p.PIO0, Irqs);
     let program = PioWs2812Program::new(&mut pio.common);
     let status_led = StatusLed::new(PioWs2812::<PIO0, 0, DEFAULT_NUM_LEDS>::new(
@@ -58,7 +71,7 @@ async fn main(_spawner: Spawner) {
     // USB CDC needs the USB peripheral and its interrupt handler.
     let driver = Driver::new(p.USB, Irqs);
 
-    let mut config = Config::new(0x2e8a, 0x000a);
+    let mut config = UsbConfig::new(0x2e8a, 0x000a);
     config.manufacturer = Some("SiTerm");
     config.product = Some("RP2040 Zero CDC");
     config.serial_number = Some("0001");
@@ -89,7 +102,7 @@ async fn main(_spawner: Spawner) {
 
     let serial_fut = async {
         let mut read_buf = [0u8; READ_BUFFER_SIZE];
-        let mut machine = StateMachine::new();
+        let mut machine = StateMachine::new(peris);
 
         // Service connections forever; each iteration waits for a new host session.
         loop {

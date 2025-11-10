@@ -10,7 +10,7 @@ use protocol::{
     Command, HANDSHAKE_COMMAND, HANDSHAKE_DELIMITER, HANDSHAKE_RESPONSE, HANDSHAKE_TIMEOUT,
 };
 
-use crate::handlers;
+use crate::handlers::{self, HandlerPeripherals};
 use crate::status_led::{
     self, StatusColours, StatusPattern, COMMUNICATION_PULSE_PERIOD, DEFAULT_BLINK_PERIOD,
     ERROR_BLINK_PERIOD, ERROR_HOLD_DURATION, HANDSHAKE_BLINK_PERIOD, SUCCESS_BLINK_PERIOD,
@@ -38,6 +38,7 @@ pub enum Error {
     UnknownCommand,
     Timeout,
     ExecutionFailed,
+    BufferProcessFailed,
 }
 
 impl Error {
@@ -47,6 +48,7 @@ impl Error {
             Error::UnknownCommand => "UnknownCommand",
             Error::Timeout => "Timeout",
             Error::ExecutionFailed => "ExecutionFailed",
+            Error::BufferProcessFailed => "BufferProcessFailed",
         }
     }
 
@@ -101,6 +103,7 @@ pub struct StateMachine {
     handshake_complete: bool,
     last_status_pattern: Option<StatusPattern>,
     latched_pattern: Option<LatchedPattern>,
+    handler_peripherals: HandlerPeripherals,
 }
 
 #[derive(Clone, Copy)]
@@ -111,7 +114,7 @@ struct LatchedPattern {
 
 impl StateMachine {
     /// Create a state machine with empty buffers and no pending handshake.
-    pub const fn new() -> Self {
+    pub const fn new(handler_peripherals: HandlerPeripherals) -> Self {
         Self {
             state: SystemState::Init,
             handshake_buf: Vec::new(),
@@ -123,6 +126,7 @@ impl StateMachine {
             handshake_complete: false,
             last_status_pattern: None,
             latched_pattern: None,
+            handler_peripherals,
         }
     }
 
@@ -331,7 +335,7 @@ impl StateMachine {
                         self.enter_error(err);
                     }
                 },
-                SystemState::ExecuteAction => match self.perform_command() {
+                SystemState::ExecuteAction => match self.perform_command().await {
                     Ok(()) => {
                         self.set_state(SystemState::SendResponse);
                     }
@@ -402,10 +406,15 @@ impl StateMachine {
     }
 
     /// Execute the pending command via the handler table and capture any response bytes.
-    fn perform_command(&mut self) -> Result<(), Error> {
+    async fn perform_command(&mut self) -> Result<(), Error> {
         if let Some(command) = self.pending_command.take() {
             self.response_buf.clear();
-            handlers::execute_command(command, &mut self.response_buf)
+            handlers::execute_command(
+                command,
+                &mut self.response_buf,
+                &mut self.handler_peripherals,
+            )
+            .await
         } else {
             Ok(())
         }
@@ -432,9 +441,19 @@ impl StateMachine {
     where
         D: embassy_usb::driver::Driver<'d>,
     {
+        let mut errored_buffer = Vec::<u8, MAX_COMMAND_SIZE>::new();
+        let _ = errored_buffer.extend_from_slice(self.response_buf.as_slice());
         self.response_buf.clear();
+
         let _ = self.response_buf.extend_from_slice(b"ERR: ");
         let _ = self.response_buf.extend_from_slice(err.as_bytes());
+        if !errored_buffer.is_empty() {
+            let _ = self.response_buf.extend_from_slice(b": ");
+            let _ = self
+                .response_buf
+                .extend_from_slice(errored_buffer.as_slice());
+        }
+
         send_framed_payload(class, self.response_buf.as_slice()).await?;
         self.response_buf.clear();
         Ok(())
