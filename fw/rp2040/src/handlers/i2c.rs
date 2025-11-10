@@ -41,6 +41,6 @@ pub async fn execute_read(
 
     response
         .extend_from_slice(&buf)
-        .map_err(|_| Error::InvalidChecksum)?;
+        .map_err(|_| Error::BufferProcessFailed)?;
     Ok(())
 }
