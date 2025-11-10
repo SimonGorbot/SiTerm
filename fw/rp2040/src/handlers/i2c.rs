@@ -31,7 +31,8 @@ pub async fn execute_read(
     }
 
     // TODO: Find out why write_async hangs. For now blocking works.
-    // MRE: Replace bus.blocking_read(address, &mut buf) with bus.async_read(address, &mut buf).await
+    // MRE: Replace bus.blocking_read(address, &mut buf) with bus.read_async(address, &mut buf).await
+    // Try using I2C0 see if the same issue arises. Leading theory is that the I2C1 IRQ is not working correctly.
     let mut buf = [0u8];
     if let Err(err) = bus.blocking_read(address, &mut buf) {
         let _ = push_i2c_error(response, err);
