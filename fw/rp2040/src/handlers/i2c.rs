@@ -20,10 +20,10 @@ pub async fn execute_read(
     ) -> Result<(), Error> {
         response.clear();
         let mut tmp = String::<64>::new();
-        write!(&mut tmp, "i2c error: {:?}", err).map_err(|_| Error::ExecutionFailed)?;
+        write!(&mut tmp, "i2c error: {:?}", err).map_err(|_| Error::BufferProcessFailed)?;
         response
             .extend_from_slice(tmp.as_bytes())
-            .map_err(|_| Error::ExecutionFailed)
+            .map_err(|_| Error::BufferProcessFailed)
     }
     if let Err(err) = bus.write_async(address, [register]).await {
         let _ = push_i2c_error(response, err);

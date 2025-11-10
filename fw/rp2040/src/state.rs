@@ -38,6 +38,7 @@ pub enum Error {
     UnknownCommand,
     Timeout,
     ExecutionFailed,
+    BufferProcessFailed,
 }
 
 impl Error {
@@ -47,6 +48,7 @@ impl Error {
             Error::UnknownCommand => "UnknownCommand",
             Error::Timeout => "Timeout",
             Error::ExecutionFailed => "ExecutionFailed",
+            Error::BufferProcessFailed => "BufferProcessFailed",
         }
     }
 
