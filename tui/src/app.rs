@@ -5,7 +5,7 @@ use ratatui::{
     prelude::Rect,
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 use serde::{Deserialize, Serialize};
 use std::{fmt::Write, str};
@@ -301,7 +301,8 @@ impl App {
                 let popup_area = centered_rect(80, 60, frame.area());
                 frame.render_widget(Clear, popup_area);
                 let popup = Paragraph::new(context.body())
-                    .alignment(Alignment::Center)
+                    .wrap(Wrap { trim: true })
+                    .alignment(Alignment::Left)
                     .block(
                         Block::default()
                             .title(context.title())
@@ -340,22 +341,34 @@ impl HelpContext {
     fn body(self) -> Vec<Line<'static>> {
         match self {
             HelpContext::Preconnect => vec![
-                Line::from("Hello World!").add_modifier(Modifier::BOLD),
-                Line::from("This is the preconnect help overlay."),
+                Line::from("Hello World! Welcome to SiTerm!")
+                    .add_modifier(Modifier::ITALIC)
+                    .add_modifier(Modifier::BOLD),
+                Line::default(),
+                Line::from(
+                    "This is a tool I developed to help me debug and test serial devices. It's still a work in progress so it'll have it's quirks.",
+                ),
+                Line::default(),
+                Line::from(
+                    "To get started, select your device in the left hand side of the menu, and the baud rate on to be used for UART communication",
+                ),
+                Line::default(),
+                Line::from(
+                    "You can use the arrow keys to navigate, enter to select, and the r key to refresh available serial ports.",
+                ),
             ],
             HelpContext::Connected => vec![
-                Line::from("Hello World!")
-                    .add_modifier(Modifier::BOLD)
-                    .fg(Color::Cyan),
+                Line::from("Commands follow the following format with some exceptions:"),
+                Line::default(),
                 Line::from(vec![
-                    Span::styled("This is mixed", Style::default().fg(Color::Green)),
-                    Span::styled(
-                        "styling",
-                        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::from("!"),
+                    Span::styled("protocol ", Style::default().fg(Color::Cyan)),
+                    Span::styled("action ", Style::default().fg(Color::LightCyan)),
+                    Span::styled("payload", Style::default().fg(Color::LightBlue)),
                 ]),
-                Line::from("This is the connected help overlay."),
+                Line::default(),
+                Line::from(
+                    "For a full list of currently available and future commands visit: https://github.com/SimonGorbot/SiTerm.",
+                ),
             ],
         }
     }
