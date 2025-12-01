@@ -225,9 +225,10 @@ impl App {
             }
             Action::ConnectionEstablished { port, baud_rate } => {
                 self.action_tx.send(Action::ShowMain)?;
-                self.action_tx.send(Action::IncomingMessage(DeviceMessage::Text(
-                    format!("Connected to {port} @ {baud_rate} baud"),
-                )))?;
+                self.action_tx
+                    .send(Action::IncomingMessage(DeviceMessage::Text(format!(
+                        "Connected to {port} @ {baud_rate} baud"
+                    ))))?;
             }
             Action::ConnectionFailed(message) => {
                 self.serial_tx = None;
@@ -358,6 +359,8 @@ impl HelpContext {
                 ),
             ],
             HelpContext::Connected => vec![
+                Line::default(),
+                Line::from(Span::styled("Commands:", Modifier::BOLD)),
                 Line::from("Commands follow the following format with some exceptions:"),
                 Line::default(),
                 Line::from(vec![
@@ -369,6 +372,12 @@ impl HelpContext {
                 Line::from(
                     "For a full list of currently available and future commands visit: https://github.com/SimonGorbot/SiTerm.",
                 ),
+                Line::default(),
+                Line::from(Span::styled("Views:", Modifier::BOLD)),
+                Line::from("There are 3 avaible views for incoming messages:"),
+                Line::from("1. UTF-8 Encoding, enabled with ctrl+u (default)"),
+                Line::from("2. Binary Encoding, enabled with ctrl+b"),
+                Line::from("3. Hex Encoding, enabled with ctrl+h"),
             ],
         }
     }
