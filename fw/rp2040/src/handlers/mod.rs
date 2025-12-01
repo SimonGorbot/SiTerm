@@ -37,5 +37,19 @@ pub async fn execute_command(
             )
             .await
         }
+        CommandOwned::I2cWrite {
+            address,
+            register,
+            payload,
+        } => {
+            i2c::execute_write(
+                address,
+                register,
+                payload.as_slice(),
+                response_buf,
+                &mut peripherals.i2c,
+            )
+            .await
+        }
     }
 }
