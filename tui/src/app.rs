@@ -8,7 +8,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 use serde::{Deserialize, Serialize};
-use std::{fmt::Write, str};
+use std::str;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
@@ -16,7 +16,7 @@ use tokio_serial::{SerialPort, SerialPortBuilderExt, SerialStream};
 use tracing::debug;
 
 use crate::{
-    action::Action,
+    action::{Action, DeviceMessage},
     components::{
         Component, connecting::ConnectingScreen, error_view::ErrorScreen,
         preconnect::PreconnectScreen, terminal::TerminalScreen,
@@ -225,8 +225,8 @@ impl App {
             }
             Action::ConnectionEstablished { port, baud_rate } => {
                 self.action_tx.send(Action::ShowMain)?;
-                self.action_tx.send(Action::IncomingMessage(format!(
-                    "Connected to {port} @ {baud_rate} baud"
+                self.action_tx.send(Action::IncomingMessage(DeviceMessage::Text(
+                    format!("Connected to {port} @ {baud_rate} baud"),
                 )))?;
             }
             Action::ConnectionFailed(message) => {
@@ -500,7 +500,8 @@ impl App {
                                 "Error: Failed to frame command `{trimmed}`: {}",
                                 format_transport_error(err)
                             );
-                            let _ = writer_action_tx.send(Action::IncomingMessage(message));
+                            let _ = writer_action_tx
+                                .send(Action::IncomingMessage(DeviceMessage::Text(message)));
                         }
                     },
                     Err(error) => {
@@ -508,7 +509,8 @@ impl App {
                             "Error: Failed to encode command `{trimmed}`: {}",
                             format_encode_error(error)
                         );
-                        let _ = writer_action_tx.send(Action::IncomingMessage(message));
+                        let _ = writer_action_tx
+                            .send(Action::IncomingMessage(DeviceMessage::Text(message)));
                     }
                 }
             }
@@ -530,8 +532,8 @@ impl App {
                         match try_decode_transport_frame(&pending) {
                             Ok(Some((payload, consumed))) => {
                                 pending.drain(..consumed);
-                                let message = payload_to_message(payload);
-                                let _ = action_tx.send(Action::IncomingMessage(message));
+                                let _ = action_tx
+                                    .send(Action::IncomingMessage(DeviceMessage::Bytes(payload)));
                             }
                             Ok(None) => break,
                             Err(err) => {
@@ -584,27 +586,4 @@ fn format_transport_error(error: TransportCodecError) -> String {
         TransportCodecError::Encode(err) => format!("encode error: {err}"),
         TransportCodecError::Decode(err) => format!("decode error: {err}"),
     }
-}
-
-fn payload_to_message(payload: Vec<u8>) -> String {
-    match String::from_utf8(payload) {
-        Ok(text) => text,
-        Err(err) => bytes_to_hex(err.into_bytes()),
-    }
-}
-
-fn bytes_to_hex(bytes: Vec<u8>) -> String {
-    if bytes.is_empty() {
-        return "<empty>".into();
-    }
-
-    let mut output = String::with_capacity(bytes.len() * 3 + 2);
-    output.push_str("0x");
-    for (idx, byte) in bytes.iter().enumerate() {
-        if idx > 0 {
-            output.push(' ');
-        }
-        let _ = write!(&mut output, "{:02X}", byte);
-    }
-    output
 }

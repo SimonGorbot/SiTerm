@@ -1,6 +1,12 @@
 use serde::{Deserialize, Serialize};
 use strum::Display;
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DeviceMessage {
+    Text(String),
+    Bytes(Vec<u8>),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Display, Serialize, Deserialize)]
 pub enum Action {
     Tick,
@@ -24,4 +30,5 @@ pub enum Action {
     CommandSent(String),
     IncomingMessage(String),
     ToggleHelp,
+    IncomingMessage(DeviceMessage),
 }
