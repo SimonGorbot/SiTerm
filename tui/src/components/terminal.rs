@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::{collections::VecDeque, fmt::Write};
 
 use color_eyre::Result;
 use ratatui::{
@@ -11,7 +11,10 @@ use ratatui::{
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::Component;
-use crate::{action::Action, config::Config};
+use crate::{
+    action::{Action, DeviceMessage},
+    config::Config,
+};
 
 const HISTORY_LIMIT: usize = 20;
 const MESSAGE_LIMIT: usize = 200;
@@ -22,15 +25,32 @@ enum InputMode {
     Editing,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MessageEncoding {
+    Utf8,
+    Hex,
+    Binary,
+}
+
+impl MessageEncoding {
+    fn label(&self) -> &'static str {
+        match self {
+            MessageEncoding::Utf8 => "UTF-8",
+            MessageEncoding::Hex => "Hex",
+            MessageEncoding::Binary => "Binary",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct MessageLine {
-    text: String,
+    content: DeviceMessage,
     style: Style,
 }
 
 impl MessageLine {
-    fn new(text: String, style: Style) -> Self {
-        Self { text, style }
+    fn new(content: DeviceMessage, style: Style) -> Self {
+        Self { content, style }
     }
 }
 
@@ -47,11 +67,18 @@ pub struct TerminalScreen {
     cursor_index: usize,
     history_position: Option<usize>,
     draft_buffer: Option<String>,
+    message_encoding: MessageEncoding,
 }
 
 impl Default for InputMode {
     fn default() -> Self {
         InputMode::Normal
+    }
+}
+
+impl Default for MessageEncoding {
+    fn default() -> Self {
+        MessageEncoding::Utf8
     }
 }
 
@@ -69,6 +96,7 @@ impl Default for TerminalScreen {
             cursor_index: 0,
             history_position: None,
             draft_buffer: None,
+            message_encoding: MessageEncoding::default(),
         }
     }
 }
@@ -96,20 +124,36 @@ impl TerminalScreen {
     }
 
     fn push_message(&mut self, message: MessageLine) {
-        if message.text.is_empty() {
-            return;
-        }
         if self.incoming_messages.len() >= MESSAGE_LIMIT {
             self.incoming_messages.pop_front();
         }
         self.incoming_messages.push_back(message);
     }
 
-    fn style_for_message(message: &str) -> Style {
-        if message.starts_with("Error:") || message.starts_with("Failed to encode command") {
-            Style::default().fg(Color::Red)
-        } else {
-            Style::default()
+    fn style_for_message(message: &DeviceMessage) -> Style {
+        match message {
+            DeviceMessage::Text(text)
+                if text.starts_with("Error:")
+                    || text.starts_with("Failed to encode command") =>
+            {
+                Style::default().fg(Color::Red)
+            }
+            _ => Style::default(),
+        }
+    }
+
+    fn change_message_encoding(&mut self, encoding: MessageEncoding) -> Result<()> {
+        if self.message_encoding != encoding {
+            self.message_encoding = encoding;
+            self.send(Action::Render)?;
+        }
+        Ok(())
+    }
+
+    fn render_message_text(&self, message: &DeviceMessage) -> String {
+        match message {
+            DeviceMessage::Text(text) => text.clone(),
+            DeviceMessage::Bytes(bytes) => format_bytes(bytes, self.message_encoding),
         }
     }
 
@@ -266,6 +310,15 @@ impl TerminalScreen {
             (KeyCode::Char('e'), KeyModifiers::NONE) => {
                 self.enter_edit_mode();
             }
+            (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
+                self.change_message_encoding(MessageEncoding::Utf8)?;
+            }
+            (KeyCode::Char('h'), KeyModifiers::CONTROL) => {
+                self.change_message_encoding(MessageEncoding::Hex)?;
+            }
+            (KeyCode::Char('b'), KeyModifiers::CONTROL) => {
+                self.change_message_encoding(MessageEncoding::Binary)?;
+            }
             (KeyCode::Char('q'), KeyModifiers::NONE) => {
                 self.send(Action::Quit)?;
             }
@@ -360,10 +413,14 @@ impl Component for TerminalScreen {
             InputMode::Editing => "Editing",
         };
         let instruction = vec![
-            Line::from(format!("Connected: {connection_line} • Mode: {mode_label}")),
+            Line::from(format!(
+                "Connected: {connection_line} • Mode: {mode_label} • View: {}",
+                self.message_encoding.label()
+            )),
             Line::from(
                 "Press e to edit the command, Enter to send, Esc to cancel editing, q to quit.",
             ),
+            Line::from("Ctrl+u UTF-8, Ctrl+h Hex, Ctrl+b Binary to change message view."),
         ];
         frame.render_widget(
             Paragraph::new(instruction)
@@ -418,7 +475,10 @@ impl Component for TerminalScreen {
         );
 
         let message_block = Block::default()
-            .title("Device Messages")
+            .title(format!(
+                "Device Messages ({})",
+                self.message_encoding.label()
+            ))
             .title_bottom(bottom_cat)
             .borders(Borders::ALL);
 
@@ -430,10 +490,11 @@ impl Component for TerminalScreen {
             .iter()
             .rev()
             .map(|msg| {
+                let formatted = self.render_message_text(&msg.content);
                 let rendered = if available_width == 0 {
-                    msg.text.clone()
+                    formatted
                 } else {
-                    let truncated: String = msg.text.chars().take(available_width).collect();
+                    let truncated: String = formatted.chars().take(available_width).collect();
                     format!("{:<width$}", truncated, width = available_width)
                 };
 
@@ -450,4 +511,50 @@ impl Component for TerminalScreen {
 
         Ok(())
     }
+}
+
+fn format_bytes(bytes: &[u8], encoding: MessageEncoding) -> String {
+    match encoding {
+        MessageEncoding::Utf8 => {
+            if bytes.is_empty() {
+                "<empty>".into()
+            } else {
+                String::from_utf8_lossy(bytes).into()
+            }
+        }
+        MessageEncoding::Hex => format_hex(bytes),
+        MessageEncoding::Binary => format_binary(bytes),
+    }
+}
+
+fn format_hex(bytes: &[u8]) -> String {
+    if bytes.is_empty() {
+        return "<empty>".into();
+    }
+
+    let mut output = String::with_capacity(bytes.len() * 3 + 2);
+    output.push_str("0x");
+    for (idx, byte) in bytes.iter().enumerate() {
+        if idx > 0 {
+            output.push(' ');
+        }
+        let _ = write!(&mut output, "{:02X}", byte);
+    }
+    output
+}
+
+fn format_binary(bytes: &[u8]) -> String {
+    if bytes.is_empty() {
+        return "<empty>".into();
+    }
+
+    let mut output = String::with_capacity(bytes.len() * 11);
+    for (idx, byte) in bytes.iter().enumerate() {
+        if idx > 0 {
+            output.push(' ');
+        }
+        output.push_str("0b");
+        let _ = write!(&mut output, "{:08b}", byte);
+    }
+    output
 }

@@ -38,7 +38,7 @@ bind_interrupts!(struct Irqs {
 // Shared buffer sizes and protocol limits used by the transport/state machine modules.
 pub(crate) const READ_BUFFER_SIZE: usize = 64;
 pub(crate) const HANDSHAKE_BUFFER_SIZE: usize = 64;
-pub(crate) const ECHO_PREFIX: &[u8] = b"rp2040: ";
+pub(crate) const ECHO_PREFIX: &[u8] = b"";
 pub(crate) const FRAME_BUFFER_SIZE: usize = 512;
 pub(crate) const MAX_COMMAND_SIZE: usize = 256;
 pub(crate) const ENCODED_FRAME_BUFFER_SIZE: usize = 320;
