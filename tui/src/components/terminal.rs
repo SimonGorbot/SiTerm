@@ -307,6 +307,9 @@ impl TerminalScreen {
         use crossterm::event::{KeyCode, KeyModifiers};
 
         match (key.code, key.modifiers) {
+            (KeyCode::Char('h'), KeyModifiers::NONE) => {
+                return Ok(Some(Action::ToggleHelp));
+            }
             (KeyCode::Char('e'), KeyModifiers::NONE) => {
                 self.enter_edit_mode();
             }
