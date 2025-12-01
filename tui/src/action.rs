@@ -28,5 +28,7 @@ pub enum Action {
     ConnectionFailed(String),
     SendCommand(String),
     CommandSent(String),
+    IncomingMessage(String),
+    ToggleHelp,
     IncomingMessage(DeviceMessage),
 }
