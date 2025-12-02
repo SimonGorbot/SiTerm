@@ -133,8 +133,7 @@ impl TerminalScreen {
     fn style_for_message(message: &DeviceMessage) -> Style {
         match message {
             DeviceMessage::Text(text)
-                if text.starts_with("Error:")
-                    || text.starts_with("Failed to encode command") =>
+                if text.starts_with("Error:") || text.starts_with("Failed to encode command") =>
             {
                 Style::default().fg(Color::Red)
             }

@@ -65,6 +65,11 @@ pub enum CommandOwned {
         register: u8,
         length: u8,
     },
+    I2cWrite {
+        address: u8,
+        register: u8,
+        payload: Vec<u8, MAX_COMMAND_SIZE>,
+    },
 }
 
 impl CommandOwned {
@@ -87,6 +92,22 @@ impl CommandOwned {
                 register,
                 length,
             }),
+            Command::I2cWrite {
+                address,
+                register,
+                payload,
+            } => {
+                let mut buffer: Vec<u8, MAX_COMMAND_SIZE> = Vec::new();
+                buffer
+                    .extend_from_slice(payload)
+                    .map_err(|_| Error::ExecutionFailed)?;
+
+                Ok(CommandOwned::I2cWrite {
+                    address,
+                    register,
+                    payload: buffer,
+                })
+            }
         }
     }
 }

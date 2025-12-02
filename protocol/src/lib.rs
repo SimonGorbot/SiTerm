@@ -155,6 +155,10 @@ pub const COMMAND_DICTIONARY: &[CommandDefinition] = &[
         method: Method::I2c,
         operation: Operation::Read,
     },
+    CommandDefinition {
+        method: Method::I2c,
+        operation: Operation::Write,
+    },
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -182,6 +186,11 @@ pub enum Command<'a> {
         register: u8,
         length: u8,
     },
+    I2cWrite {
+        address: u8,
+        register: u8,
+        payload: &'a [u8],
+    },
 }
 
 pub fn decode_command(buffer: &[u8]) -> Result<Command<'_>, ProtocolError> {
@@ -207,6 +216,24 @@ pub fn decode_command(buffer: &[u8]) -> Result<Command<'_>, ProtocolError> {
                 address,
                 register,
                 length,
+            })
+        }
+        (Method::I2c, Operation::Write) => {
+            if payload.len() < 3 {
+                return Err(ProtocolError::MalformedPayload { method, operation });
+            }
+            let address = payload[0];
+            let register = payload[1];
+            let length = payload[2] as usize;
+
+            if payload.len() != 3 + length {
+                return Err(ProtocolError::MalformedPayload { method, operation });
+            }
+
+            Ok(Command::I2cWrite {
+                address,
+                register,
+                payload: &payload[3..],
             })
         }
         _ => Err(ProtocolError::UnsupportedOperation { method, operation }),
@@ -258,6 +285,33 @@ mod tests {
                 assert_eq!(address, 0x80);
                 assert_eq!(register, 0x11);
                 assert_eq!(length, 0x04);
+            }
+            _ => panic!("unexpected variant"),
+        }
+    }
+
+    #[test]
+    fn decode_i2c_write() {
+        let payload = [
+            Method::I2c.as_byte(),
+            Operation::Write.as_byte(),
+            0x50,
+            0x20,
+            0x02,
+            0xAA,
+            0xBB,
+        ];
+        let command = decode_command(&payload).unwrap();
+
+        match command {
+            Command::I2cWrite {
+                address,
+                register,
+                payload,
+            } => {
+                assert_eq!(address, 0x50);
+                assert_eq!(register, 0x20);
+                assert_eq!(payload, &[0xAA, 0xBB]);
             }
             _ => panic!("unexpected variant"),
         }

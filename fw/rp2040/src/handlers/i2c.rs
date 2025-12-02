@@ -5,6 +5,22 @@ use embassy_rp::i2c::{Async, Error as I2cError, I2c};
 use embassy_rp::peripherals::I2C1;
 use heapless::{String, Vec};
 
+fn push_error_message(
+    response: &mut Vec<u8, MAX_COMMAND_SIZE>,
+    message: &str,
+) -> Result<(), Error> {
+    response.clear();
+    response
+        .extend_from_slice(message.as_bytes())
+        .map_err(|_| Error::BufferProcessFailed)
+}
+
+fn push_i2c_error(response: &mut Vec<u8, MAX_COMMAND_SIZE>, err: I2cError) -> Result<(), Error> {
+    let mut tmp = String::<64>::new();
+    write!(&mut tmp, "i2c error: {:?}", err).map_err(|_| Error::BufferProcessFailed)?;
+    push_error_message(response, tmp.as_str())
+}
+
 pub async fn execute_read(
     address: u8,
     register: u8,
@@ -12,25 +28,6 @@ pub async fn execute_read(
     response: &mut Vec<u8, MAX_COMMAND_SIZE>,
     bus: &mut I2c<'static, I2C1, Async>,
 ) -> Result<(), Error> {
-    fn push_error_message(
-        response: &mut Vec<u8, MAX_COMMAND_SIZE>,
-        message: &str,
-    ) -> Result<(), Error> {
-        response.clear();
-        response
-            .extend_from_slice(message.as_bytes())
-            .map_err(|_| Error::BufferProcessFailed)
-    }
-
-    fn push_i2c_error(
-        response: &mut Vec<u8, MAX_COMMAND_SIZE>,
-        err: I2cError,
-    ) -> Result<(), Error> {
-        let mut tmp = String::<64>::new();
-        write!(&mut tmp, "i2c error: {:?}", err).map_err(|_| Error::BufferProcessFailed)?;
-        push_error_message(response, tmp.as_str())
-    }
-
     let len = length as usize;
     let available_capacity = response.capacity().saturating_sub(response.len());
     if len == 0 {
@@ -54,5 +51,53 @@ pub async fn execute_read(
     response
         .extend_from_slice(read_buf)
         .map_err(|_| Error::BufferProcessFailed)?;
+    Ok(())
+}
+
+pub async fn execute_write(
+    address: u8,
+    register: u8,
+    payload: &[u8],
+    response: &mut Vec<u8, MAX_COMMAND_SIZE>,
+    bus: &mut I2c<'static, I2C1, Async>,
+) -> Result<(), Error> {
+    if payload.is_empty() {
+        let _ = push_error_message(response, "i2c error: payload must not be empty");
+        return Err(Error::ExecutionFailed);
+    }
+
+    let total_len = payload.len() + 1; // include register byte
+    if total_len > MAX_COMMAND_SIZE {
+        let _ = push_error_message(response, "i2c error: payload too large");
+        return Err(Error::ExecutionFailed);
+    }
+
+    let mut buf = [0u8; MAX_COMMAND_SIZE];
+    buf[0] = register;
+    buf[1..total_len].copy_from_slice(payload);
+
+    if let Err(err) = bus.blocking_write(address, &buf[..total_len]) {
+        let _ = push_i2c_error(response, err);
+        return Err(Error::ExecutionFailed);
+    }
+
+    response.clear();
+    let mut msg = String::<32>::new();
+    if write!(
+        &mut msg,
+        "OK [{:#04X}, {:#04X}, {}]",
+        address,
+        register,
+        payload.len()
+    )
+    .is_err()
+    {
+        return Err(Error::BufferProcessFailed);
+    }
+
+    response
+        .extend_from_slice(msg.as_bytes())
+        .map_err(|_| Error::BufferProcessFailed)?;
+
     Ok(())
 }
