@@ -26,6 +26,7 @@ use embassy_usb::driver::EndpointError;
 use embassy_usb::{Builder, Config as UsbConfig};
 
 use state::StateMachine;
+use static_cell::StaticCell;
 use status_led::{StatusColours, StatusLed, StatusPattern, DEFAULT_NUM_LEDS};
 use {defmt_rtt as _, panic_probe as _};
 
@@ -73,7 +74,7 @@ async fn main(_spawner: Spawner) {
 
     let mut config = UsbConfig::new(0x2e8a, 0x000a);
     config.manufacturer = Some("SiTerm");
-    config.product = Some("RP2040 Zero CDC");
+    config.product = Some("SiTerm RP2040");
     config.serial_number = Some("0001");
     config.max_power = 100;
     config.max_packet_size_0 = 64;
@@ -102,7 +103,8 @@ async fn main(_spawner: Spawner) {
 
     let serial_fut = async {
         let mut read_buf = [0u8; READ_BUFFER_SIZE];
-        let mut machine = StateMachine::new(peris);
+        static STATE_MACHINE: StaticCell<StateMachine> = StaticCell::new();
+        let mut machine = STATE_MACHINE.init_with(|| StateMachine::new(peris));
 
         // Service connections forever; each iteration waits for a new host session.
         loop {
