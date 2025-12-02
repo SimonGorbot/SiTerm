@@ -491,6 +491,7 @@ dependencies = [
  "tracing",
  "tracing-error",
  "tracing-subscriber",
+ "unicode-width 0.1.14",
  "vergen-gix",
 ]
 
