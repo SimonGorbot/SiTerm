@@ -9,6 +9,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
 };
 use tokio::sync::mpsc::UnboundedSender;
+use unicode_width::UnicodeWidthChar;
 
 use super::Component;
 use crate::{
@@ -493,12 +494,7 @@ impl Component for TerminalScreen {
             .rev()
             .map(|msg| {
                 let formatted = self.render_message_text(&msg.content);
-                let rendered = if available_width == 0 {
-                    formatted
-                } else {
-                    let truncated: String = formatted.chars().take(available_width).collect();
-                    format!("{:<width$}", truncated, width = available_width)
-                };
+                let rendered = pad_to_width(&formatted, available_width);
 
                 ListItem::new(Line::from(vec![Span::styled(rendered, msg.style)]))
             })
@@ -513,6 +509,31 @@ impl Component for TerminalScreen {
 
         Ok(())
     }
+}
+
+fn pad_to_width(text: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+
+    // Track the displayed width so we can truncate and pad accurately.
+    let mut rendered = String::with_capacity(width);
+    let mut current_width = 0;
+
+    for ch in text.chars() {
+        let ch_width = ch.width().unwrap_or(0);
+        if current_width + ch_width > width {
+            break;
+        }
+        rendered.push(ch);
+        current_width += ch_width;
+    }
+
+    if current_width < width {
+        rendered.extend(std::iter::repeat(' ').take(width - current_width));
+    }
+
+    rendered
 }
 
 fn format_bytes(bytes: &[u8], encoding: MessageEncoding) -> String {
@@ -534,12 +555,12 @@ fn format_hex(bytes: &[u8]) -> String {
         return "<empty>".into();
     }
 
-    let mut output = String::with_capacity(bytes.len() * 3 + 2);
-    output.push_str("0x");
+    let mut output = String::with_capacity(bytes.len() * 4 + bytes.len().saturating_sub(1));
     for (idx, byte) in bytes.iter().enumerate() {
         if idx > 0 {
             output.push(' ');
         }
+        output.push_str("0x");
         let _ = write!(&mut output, "{:02X}", byte);
     }
     output
