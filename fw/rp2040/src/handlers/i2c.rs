@@ -81,5 +81,23 @@ pub async fn execute_write(
         return Err(Error::ExecutionFailed);
     }
 
+    response.clear();
+    let mut msg = String::<32>::new();
+    if write!(
+        &mut msg,
+        "OK [{:#04X}, {:#04X}, {}]",
+        address,
+        register,
+        payload.len()
+    )
+    .is_err()
+    {
+        return Err(Error::BufferProcessFailed);
+    }
+
+    response
+        .extend_from_slice(msg.as_bytes())
+        .map_err(|_| Error::BufferProcessFailed)?;
+
     Ok(())
 }
