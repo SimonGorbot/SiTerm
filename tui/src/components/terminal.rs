@@ -145,6 +145,8 @@ impl TerminalScreen {
     fn change_message_encoding(&mut self, encoding: MessageEncoding) -> Result<()> {
         if self.message_encoding != encoding {
             self.message_encoding = encoding;
+            // Clear the buffer so shorter encodings don't leave stale glyphs behind.
+            self.send(Action::ClearScreen)?;
             self.send(Action::Render)?;
         }
         Ok(())
