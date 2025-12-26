@@ -540,16 +540,32 @@ fn pad_to_width(text: &str, width: usize) -> String {
 
 fn format_bytes(bytes: &[u8], encoding: MessageEncoding) -> String {
     match encoding {
-        MessageEncoding::Utf8 => {
-            if bytes.is_empty() {
-                "<empty>".into()
-            } else {
-                String::from_utf8_lossy(bytes).into()
-            }
-        }
+        MessageEncoding::Utf8 => format_utf8(bytes),
         MessageEncoding::Hex => format_hex(bytes),
         MessageEncoding::Binary => format_binary(bytes),
     }
+}
+
+fn format_utf8(bytes: &[u8]) -> String {
+    if bytes.is_empty() {
+        return "<empty>".into();
+    }
+
+    // Escape control characters so they don't affect layout or render as zero-width.
+    let mut output = String::new();
+    for ch in String::from_utf8_lossy(bytes).chars() {
+        match ch {
+            '\n' => output.push_str("\\n"),
+            '\r' => output.push_str("\\r"),
+            '\t' => output.push_str("\\t"),
+            c if c.is_control() => {
+                let _ = write!(&mut output, "\\x{:02X}", c as u32);
+            }
+            c => output.push(c),
+        }
+    }
+
+    output
 }
 
 fn format_hex(bytes: &[u8]) -> String {
